@@ -1,0 +1,79 @@
+{
+  "entities": {
+    "LeaderboardScore": {
+      "title": "LeaderboardScore",
+      "description": "Public global high-score entry for Ocarina Simulator",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the player",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "playerName": {
+          "type": "string",
+          "description": "Public display name chosen by the player",
+          "minLength": 2,
+          "maxLength": 24
+        },
+        "score": {
+          "type": "integer",
+          "description": "Best score achieved in Desafio mode"
+        },
+        "bestCombo": {
+          "type": "integer",
+          "description": "Highest note combo achieved"
+        },
+        "accuracy": {
+          "type": "number",
+          "description": "Percentage accuracy from 0 to 100"
+        },
+        "songsCompleted": {
+          "type": "integer",
+          "description": "Total melodies completed in best run"
+        },
+        "mode": {
+          "type": "string",
+          "description": "Game mode identifier",
+          "enum": ["desafio"]
+        },
+        "isPublic": {
+          "type": "boolean",
+          "description": "Whether the score is listed on the global leaderboard"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp"
+        }
+      },
+      "required": [
+        "uid",
+        "playerName",
+        "score",
+        "bestCombo",
+        "accuracy",
+        "songsCompleted",
+        "mode",
+        "isPublic",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/scores/{scoreId}": {
+      "schema": {
+        "$ref": "#/entities/LeaderboardScore"
+      },
+      "description": "Global cloud leaderboard entries keyed by player UID"
+    }
+  }
+}

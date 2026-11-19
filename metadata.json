@@ -1,0 +1,6 @@
+{
+  "name": "Ocarina Simulator",
+  "description": "Simulador 3D retro low-polygon de ocarina inspirada em jogos clássicos de fantasia, com física realista ao toque, notas musicais interativas, suporte a teclado e controle, e placar global na nuvem.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

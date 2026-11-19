@@ -1,0 +1,132 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net: default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Connection probe document
+    match /test/{docId} {
+      allow get: if docId == 'connection';
+    }
+
+    // Reusable hardened helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidLeaderboardScore(data) {
+      return data.keys().hasAll([
+          'uid',
+          'playerName',
+          'score',
+          'bestCombo',
+          'accuracy',
+          'songsCompleted',
+          'mode',
+          'isPublic',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'playerName',
+          'score',
+          'bestCombo',
+          'accuracy',
+          'songsCompleted',
+          'mode',
+          'isPublic',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.uid is string
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.playerName is string
+        && data.playerName.size() >= 2
+        && data.playerName.size() <= 24
+        && data.score is int
+        && data.score >= 0
+        && data.score <= 9999999
+        && data.bestCombo is int
+        && data.bestCombo >= 0
+        && data.bestCombo <= 9999
+        && (data.accuracy is int || data.accuracy is float)
+        && data.accuracy >= 0
+        && data.accuracy <= 100
+        && data.songsCompleted is int
+        && data.songsCompleted >= 0
+        && data.songsCompleted <= 999
+        && data.mode is string
+        && data.mode == 'desafio'
+        && data.isPublic is bool
+        && data.isPublic == true
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /scores/{scoreId} {
+      allow get: if isValidId(scoreId) && existing().isPublic == true;
+      allow list: if existing().isPublic == true && existing().score >= 0;
+
+      allow create: if isVerifiedUser()
+        && isValidId(scoreId)
+        && scoreId == request.auth.uid
+        && isValidLeaderboardScore(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(scoreId)
+        && scoreId == request.auth.uid
+        && existing().uid == request.auth.uid
+        && isValidLeaderboardScore(incoming())
+        && incoming().uid == existing().uid
+        && incoming().mode == existing().mode
+        && incoming().isPublic == existing().isPublic
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly(['playerName', 'updatedAt'])
+          )
+          ||
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'playerName',
+              'score',
+              'bestCombo',
+              'accuracy',
+              'songsCompleted',
+              'updatedAt'
+            ])
+            && incoming().score >= existing().score
+          )
+        );
+
+      allow delete: if isVerifiedUser()
+        && isValidId(scoreId)
+        && scoreId == request.auth.uid
+        && existing().uid == request.auth.uid;
+    }
+  }
+}
