@@ -20,12 +20,16 @@ export function stepSpring1D(
 
 export interface OcarinaPhysicsState {
   holes: Record<NoteId, Spring1D>;
+  sharpValve: Spring1D; // R / Shift (+1 semitone)
+  flatValve: Spring1D; // Z / Alt / C (-1 semitone)
+  pitchBend: Spring1D; // Control Stick Y / Q & E (-2..+2 semitones)
   tiltX: Spring1D; // forward/back pitch
   tiltZ: Spring1D; // left/right roll
   yaw: Spring1D;
   bounceY: Spring1D;
   pointerTiltX: number; // -1..1 from mouse/analog stick
   pointerTiltY: number; // -1..1 from mouse/analog stick
+  explicitVibrato: boolean;
   vibratoIntensity: number; // 0..1
   breathPressure: number; // 0..1
 }
@@ -37,12 +41,16 @@ export function createOcarinaPhysicsState(): OcarinaPhysicsState {
   }
   return {
     holes,
+    sharpValve: { value: 0, velocity: 0, target: 0 },
+    flatValve: { value: 0, velocity: 0, target: 0 },
+    pitchBend: { value: 0, velocity: 0, target: 0 },
     tiltX: { value: 0, velocity: 0, target: 0 },
     tiltZ: { value: 0, velocity: 0, target: 0 },
     yaw: { value: 0, velocity: 0, target: 0 },
     bounceY: { value: 0, velocity: 0, target: 0 },
     pointerTiltX: 0,
     pointerTiltY: 0,
+    explicitVibrato: false,
     vibratoIntensity: 0,
     breathPressure: 0,
   };
@@ -63,7 +71,6 @@ export function applyHoleTouchImpulse(
 
   if (pressed) {
     const [hx, , hz] = OCARINA_NOTES[note].holePos;
-    // Pressing a hole on the right (+hx) rolls right (-tiltZ), pressing front (+hz) pitches forward (+tiltX)
     state.tiltZ.velocity -= hx * 2.6 * impulseStrength;
     state.tiltX.velocity += hz * 2.4 * impulseStrength;
     state.yaw.velocity += hx * 0.9 * impulseStrength;
@@ -72,6 +79,18 @@ export function applyHoleTouchImpulse(
   } else {
     hole.velocity -= 3.0;
   }
+}
+
+export function setModifierValves(
+  state: OcarinaPhysicsState,
+  semitoneShift: number,
+  pitchBendTarget: number,
+  explicitVibrato: boolean,
+): void {
+  state.sharpValve.target = semitoneShift > 0 ? 1 : 0;
+  state.flatValve.target = semitoneShift < 0 ? 1 : 0;
+  state.pitchBend.target = Math.max(-2, Math.min(2, pitchBendTarget));
+  state.explicitVibrato = explicitVibrato;
 }
 
 export function stepOcarinaPhysics(
@@ -85,10 +104,13 @@ export function stepOcarinaPhysics(
   for (const id of NOTE_ORDER) {
     stepSpring1D(state.holes[id], 420, 22, clampedDt);
   }
+  stepSpring1D(state.sharpValve, 380, 20, clampedDt);
+  stepSpring1D(state.flatValve, 380, 20, clampedDt);
+  stepSpring1D(state.pitchBend, 210, 16, clampedDt);
 
-  // Target resting tilt responds gently to pointer drag / analog stick tilt
-  state.tiltX.target = state.pointerTiltY * 0.22;
-  state.tiltZ.target = -state.pointerTiltX * 0.28;
+  // Target resting tilt responds gently to pointer drag / analog stick / pitch bend
+  state.tiltX.target = state.pointerTiltY * 0.22 - state.pitchBend.value * 0.1;
+  state.tiltZ.target = -state.pointerTiltX * 0.28 + (state.sharpValve.value - state.flatValve.value) * 0.08;
   state.yaw.target = state.pointerTiltX * 0.18;
   state.bounceY.target = heldNotesCount > 0 ? -0.025 : 0;
 
@@ -100,13 +122,15 @@ export function stepOcarinaPhysics(
   const targetBreath = heldNotesCount > 0 ? 1 : 0;
   state.breathPressure += (targetBreath - state.breathPressure) * (1 - Math.exp(-14 * clampedDt));
 
-  // Vibrato from pointer/stick tilt magnitude or held breath shimmer
   const stickMag = Math.min(1, Math.hypot(state.pointerTiltX, state.pointerTiltY));
-  const targetVibrato = heldNotesCount > 0 ? Math.max(0.12, stickMag * 0.95) : 0;
+  const vibratoBase = state.explicitVibrato ? 0.92 : Math.max(0.12, stickMag * 0.95);
+  const targetVibrato = heldNotesCount > 0 ? vibratoBase : 0;
   state.vibratoIntensity += (targetVibrato - state.vibratoIntensity) * (1 - Math.exp(-10 * clampedDt));
 
-  // Subtle ambient breath resonance micro-motion when holding a note
   if (heldNotesCount > 0) {
     state.bounceY.value += Math.sin(elapsed * 28) * 0.0012 * state.breathPressure;
+    if (state.explicitVibrato) {
+      state.tiltX.value += Math.sin(elapsed * 34) * 0.014;
+    }
   }
 }

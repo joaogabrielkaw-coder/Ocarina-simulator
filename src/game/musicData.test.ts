@@ -2,10 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildSongSchedule,
+  CHALLENGE_SONGS,
   computeAccuracyPercent,
   computeHitPoints,
   computeNoteFrequency,
   evaluateNoteHit,
+  getMidiNoteName,
+  getMusicalNoteName,
+  GRID_15_NOTES,
   matchSongSequence,
   OCARINA_SONGS,
   sanitizeLeaderboardPayload,
@@ -16,12 +20,48 @@ import {
   stepOcarinaPhysics,
 } from './physics';
 
-test('computeNoteFrequency calculates exact semitone bends', () => {
+test('computeNoteFrequency calculates exact semitone bends and chromatic names', () => {
   assert.equal(computeNoteFrequency('RIGHT', 0), 440);
   const upOctave = computeNoteFrequency('RIGHT', 12);
   assert.ok(Math.abs(upOctave - 880) < 0.01);
   const downSemitone = computeNoteFrequency('RIGHT', -1);
   assert.ok(downSemitone < 440 && downSemitone > 410);
+
+  assert.equal(getMusicalNoteName('A', 0), 'D4');
+  assert.equal(getMusicalNoteName('A', 1), 'D♯4');
+  assert.equal(getMusicalNoteName('A', -2), 'C4');
+  assert.equal(getMusicalNoteName('UP', 2), 'E5');
+  assert.equal(getMidiNoteName(86, 0), 'D6');
+  assert.equal(getMidiNoteName(77, 1), 'F♯5');
+});
+
+test('GRID_15_NOTES defines the exact 3x5 keypad D6..E5 mapped to Q-T / A-G / Z-B', () => {
+  assert.equal(GRID_15_NOTES.length, 15);
+  assert.equal(GRID_15_NOTES[0].label, 'D6');
+  assert.equal(GRID_15_NOTES[0].keyLabel, 'Q');
+  assert.equal(GRID_15_NOTES[5].label, 'F5');
+  assert.equal(GRID_15_NOTES[5].keyLabel, 'A');
+  assert.equal(GRID_15_NOTES[14].label, 'E5');
+  assert.equal(GRID_15_NOTES[14].keyLabel, 'B');
+});
+
+test('all 12 Zelda Ocarina songs match and have valid demo steps', () => {
+  assert.equal(OCARINA_SONGS.length, 12);
+  assert.equal(CHALLENGE_SONGS.length, 6);
+
+  for (const song of OCARINA_SONGS) {
+    const matched = matchSongSequence(['A', 'UP', ...song.sequence]);
+    assert.ok(matched, `Failed to match ${song.id}`);
+    assert.equal(matched.id, song.id);
+    assert.ok(song.demoSteps.length >= song.sequence.length);
+    for (let i = 0; i < song.demoSteps.length; i++) {
+      const step = song.demoSteps[i];
+      assert.ok(step.durationSec > 0);
+      if (i > 0) {
+        assert.ok(step.startSec >= song.demoSteps[i - 1].startSec);
+      }
+    }
+  }
 });
 
 test('matchSongSequence detects canonical Ocarina melodies even after noise notes', () => {
@@ -42,6 +82,10 @@ test('matchSongSequence detects canonical Ocarina melodies even after noise note
   const storms = matchSongSequence(['RIGHT', 'A', 'DOWN', 'UP', 'A', 'DOWN', 'UP']);
   assert.ok(storms);
   assert.equal(storms.id, 'storms');
+
+  const bolero = matchSongSequence(['DOWN', 'A', 'DOWN', 'A', 'RIGHT', 'DOWN', 'RIGHT', 'DOWN']);
+  assert.ok(bolero);
+  assert.equal(bolero.id, 'bolero');
 });
 
 test('rhythm grading and combo multiplier scoring work accurately', () => {

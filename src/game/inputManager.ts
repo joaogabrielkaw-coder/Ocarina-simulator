@@ -1,9 +1,13 @@
-import { NoteId } from './musicData';
+import { GRID_15_NOTES, GridNoteSpec, NoteId } from './musicData';
 
 export interface InputCallbacks {
   onNotePress: (note: NoteId) => void;
   onNoteRelease: (note: NoteId) => void;
+  onGridNotePress?: (spec: GridNoteSpec) => void;
+  onGridNoteRelease?: (spec: GridNoteSpec) => void;
   onSemitoneChange: (shift: number) => void;
+  onPitchBendChange?: (shift: number) => void;
+  onVibratoToggle?: (active: boolean) => void;
   onAnalogTilt: (tx: number, ty: number) => void;
   onStartOrConfirm: () => void;
   onPauseToggle: () => void;
@@ -13,28 +17,35 @@ export interface InputCallbacks {
   onGamepadStatus: (connected: boolean, name: string | null) => void;
 }
 
-const KEY_TO_NOTE: Record<string, NoteId> = {
+// Canonical Zelda 5-note directional + Space controls (never conflicts with 3x5 Q-B keys)
+const KEY_TO_ZELDA_NOTE: Record<string, NoteId> = {
   Space: 'A',
-  KeyZ: 'A',
-  KeyK: 'A',
   ArrowDown: 'DOWN',
-  KeyS: 'DOWN',
-  KeyJ: 'DOWN',
   ArrowRight: 'RIGHT',
-  KeyD: 'RIGHT',
-  KeyL: 'RIGHT',
   ArrowLeft: 'LEFT',
-  KeyA: 'LEFT',
-  KeyH: 'LEFT',
   ArrowUp: 'UP',
-  KeyW: 'UP',
-  KeyI: 'UP',
 };
+
+const CODE_TO_GRID_NOTE: Record<string, GridNoteSpec> = Object.fromEntries(
+  GRID_15_NOTES.map((item) => [item.keyCode, item]),
+);
+
+const MODIFIER_KEYS = new Set([
+  'ShiftLeft',
+  'ShiftRight',
+  'AltLeft',
+  'AltRight',
+  'Equal',
+  'BracketRight',
+  'Minus',
+  'BracketLeft',
+]);
 
 export class UnifiedInputManager {
   private callbacks: InputCallbacks;
   private heldKeys = new Set<string>();
   private keyNotes = new Set<NoteId>();
+  private gridKeyNotes = new Set<string>();
   private gamepadNotes = new Set<NoteId>();
   private prevGpButtons = new Map<number, boolean>();
   private gamepadConnected = false;
@@ -53,12 +64,18 @@ export class UnifiedInputManager {
     return tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable;
   }
 
+  private emitSemitone(shift: number): void {
+    this.callbacks.onSemitoneChange?.(shift);
+    this.callbacks.onPitchBendChange?.(shift);
+  }
+
   private computeKeyboardSemitone(): number {
-    const sharp = this.heldKeys.has('ShiftLeft') || this.heldKeys.has('ShiftRight');
-    const flat = this.heldKeys.has('AltLeft') || this.heldKeys.has('KeyC');
-    if (sharp && !flat) return 1;
-    if (flat && !sharp) return -1;
-    return 0;
+    let shift = 0;
+    if (this.heldKeys.has('ShiftLeft') || this.heldKeys.has('ShiftRight')) shift += 1;
+    if (this.heldKeys.has('AltLeft') || this.heldKeys.has('AltRight')) shift -= 1;
+    if (this.heldKeys.has('Equal') || this.heldKeys.has('BracketRight')) shift += 2;
+    if (this.heldKeys.has('Minus') || this.heldKeys.has('BracketLeft')) shift -= 2;
+    return Math.max(-2, Math.min(2, shift));
   }
 
   private handleKeyDown = (e: KeyboardEvent): void => {
@@ -68,7 +85,7 @@ export class UnifiedInputManager {
     if (state === 'title' && (e.code === 'Enter' || e.code === 'Space')) {
       e.preventDefault();
       if (!e.repeat) {
-        this.callbacks.onStartOrConfirm();
+        this.callbacks.onStartOrConfirm?.();
       }
       return;
     }
@@ -77,43 +94,56 @@ export class UnifiedInputManager {
 
     if (e.code === 'Escape' || e.code === 'KeyP') {
       e.preventDefault();
-      this.callbacks.onPauseToggle();
+      this.callbacks.onPauseToggle?.();
       return;
     }
     if (e.code === 'KeyM') {
       e.preventDefault();
-      this.callbacks.onMuteToggle();
+      this.callbacks.onMuteToggle?.();
       return;
     }
-    if (e.code === 'KeyR') {
+    if (e.code === 'F2') {
       e.preventDefault();
-      this.callbacks.onRestart();
+      this.callbacks.onRestart?.();
       return;
     }
-    if (e.code === 'KeyT') {
+    if (e.code === 'Tab') {
       e.preventDefault();
-      this.callbacks.onScoreboardToggle();
+      this.callbacks.onScoreboardToggle?.();
       return;
     }
 
     this.heldKeys.add(e.code);
 
-    if (
-      e.code === 'ShiftLeft' ||
-      e.code === 'ShiftRight' ||
-      e.code === 'AltLeft' ||
-      e.code === 'KeyC'
-    ) {
-      this.callbacks.onSemitoneChange(this.computeKeyboardSemitone());
+    if (e.code === 'Semicolon' || e.code === 'Backslash') {
+      this.callbacks.onVibratoToggle?.(true);
       return;
     }
 
-    const note = KEY_TO_NOTE[e.code];
+    if (MODIFIER_KEYS.has(e.code)) {
+      if (e.code === 'AltLeft' || e.code === 'AltRight') {
+        e.preventDefault();
+      }
+      this.emitSemitone(this.computeKeyboardSemitone());
+      return;
+    }
+
+    const gridSpec = CODE_TO_GRID_NOTE[e.code];
+    if (gridSpec) {
+      e.preventDefault();
+      if (!this.gridKeyNotes.has(gridSpec.id)) {
+        this.gridKeyNotes.add(gridSpec.id);
+        this.callbacks.onGridNotePress?.(gridSpec);
+      }
+      return;
+    }
+
+    const note = KEY_TO_ZELDA_NOTE[e.code];
     if (note) {
       e.preventDefault();
       if (!this.keyNotes.has(note)) {
         this.keyNotes.add(note);
-        this.callbacks.onNotePress(note);
+        this.callbacks.onNotePress?.(note);
       }
     }
   };
@@ -121,28 +151,32 @@ export class UnifiedInputManager {
   private handleKeyUp = (e: KeyboardEvent): void => {
     this.heldKeys.delete(e.code);
 
-    if (
-      e.code === 'ShiftLeft' ||
-      e.code === 'ShiftRight' ||
-      e.code === 'AltLeft' ||
-      e.code === 'KeyC'
-    ) {
-      this.callbacks.onSemitoneChange(this.computeKeyboardSemitone());
+    if (e.code === 'Semicolon' || e.code === 'Backslash') {
+      this.callbacks.onVibratoToggle?.(false);
     }
 
-    const note = KEY_TO_NOTE[e.code];
+    if (MODIFIER_KEYS.has(e.code)) {
+      this.emitSemitone(this.computeKeyboardSemitone());
+    }
+
+    const gridSpec = CODE_TO_GRID_NOTE[e.code];
+    if (gridSpec && this.gridKeyNotes.has(gridSpec.id)) {
+      this.gridKeyNotes.delete(gridSpec.id);
+      this.callbacks.onGridNoteRelease?.(gridSpec);
+    }
+
+    const note = KEY_TO_ZELDA_NOTE[e.code];
     if (note) {
-      // Only release if no other held key maps to the same note
       let stillHeld = false;
       for (const code of this.heldKeys) {
-        if (KEY_TO_NOTE[code] === note) {
+        if (KEY_TO_ZELDA_NOTE[code] === note) {
           stillHeld = true;
           break;
         }
       }
       if (!stillHeld && this.keyNotes.has(note)) {
         this.keyNotes.delete(note);
-        this.callbacks.onNoteRelease(note);
+        this.callbacks.onNoteRelease?.(note);
       }
     }
   };
@@ -150,14 +184,20 @@ export class UnifiedInputManager {
   public clearAllHeld = (): void => {
     this.heldKeys.clear();
     for (const note of Array.from(this.keyNotes)) {
-      this.callbacks.onNoteRelease(note);
+      this.callbacks.onNoteRelease?.(note);
     }
     this.keyNotes.clear();
+    for (const id of Array.from(this.gridKeyNotes)) {
+      const spec = GRID_15_NOTES.find((g) => g.id === id);
+      if (spec) this.callbacks.onGridNoteRelease?.(spec);
+    }
+    this.gridKeyNotes.clear();
     for (const note of Array.from(this.gamepadNotes)) {
-      this.callbacks.onNoteRelease(note);
+      this.callbacks.onNoteRelease?.(note);
     }
     this.gamepadNotes.clear();
-    this.callbacks.onSemitoneChange(0);
+    this.callbacks.onVibratoToggle?.(false);
+    this.emitSemitone(0);
   };
 
   private handleVisibility = (): void => {
@@ -168,12 +208,12 @@ export class UnifiedInputManager {
 
   private handleGamepadConnected = (e: GamepadEvent): void => {
     this.gamepadConnected = true;
-    this.callbacks.onGamepadStatus(true, e.gamepad.id.slice(0, 28));
+    this.callbacks.onGamepadStatus?.(true, e.gamepad.id.slice(0, 28));
   };
 
   private handleGamepadDisconnected = (): void => {
     this.gamepadConnected = false;
-    this.callbacks.onGamepadStatus(false, null);
+    this.callbacks.onGamepadStatus?.(false, null);
     this.clearAllHeld();
   };
 
@@ -203,20 +243,18 @@ export class UnifiedInputManager {
     if (activePad) {
       if (!this.gamepadConnected) {
         this.gamepadConnected = true;
-        this.callbacks.onGamepadStatus(true, activePad.id.slice(0, 28));
+        this.callbacks.onGamepadStatus?.(true, activePad.id.slice(0, 28));
       }
 
       const desiredNotes = new Set<NoteId>();
       const b = activePad.buttons;
 
-      // Face buttons + D-Pad
       if (b[0]?.pressed) desiredNotes.add('A');
       if (b[1]?.pressed || b[15]?.pressed) desiredNotes.add('RIGHT');
-      if (b[2]?.pressed || b[13]?.pressed) desiredNotes.add('DOWN');
+      if (b[2]?.pressed || b[14]?.pressed) desiredNotes.add('LEFT');
       if (b[3]?.pressed || b[12]?.pressed) desiredNotes.add('UP');
-      if (b[14]?.pressed) desiredNotes.add('LEFT');
+      if (b[13]?.pressed) desiredNotes.add('DOWN');
 
-      // Right Analog Stick (C-Buttons equivalent on N64/modern controller)
       const rx = activePad.axes[2] ?? 0;
       const ry = activePad.axes[3] ?? 0;
       if (rx > 0.55) desiredNotes.add('RIGHT');
@@ -224,39 +262,44 @@ export class UnifiedInputManager {
       if (ry < -0.55) desiredNotes.add('UP');
       if (ry > 0.55) desiredNotes.add('DOWN');
 
-      // Left Analog Stick -> Physical Ocarina tilt & pitch vibrato
       const lx = Math.abs(activePad.axes[0] ?? 0) > 0.14 ? (activePad.axes[0] ?? 0) : 0;
       const ly = Math.abs(activePad.axes[1] ?? 0) > 0.14 ? (activePad.axes[1] ?? 0) : 0;
       if (lx !== 0 || ly !== 0) {
-        this.callbacks.onAnalogTilt(lx, ly);
+        this.callbacks.onAnalogTilt?.(lx, ly);
       }
 
-      // Bumpers -> Semitone bend
-      if (b[5]?.pressed) this.callbacks.onSemitoneChange(1);
-      else if (b[4]?.pressed) this.callbacks.onSemitoneChange(-1);
+      let gpShift = 0;
+      if (b[5]?.pressed) gpShift += 1;
+      if (b[4]?.pressed || b[6]?.pressed) gpShift -= 1;
+      if (ly < -0.65) gpShift += 2;
+      else if (ly > 0.65) gpShift -= 2;
 
-      // Start button (index 9) edge trigger
+      if (gpShift !== 0) {
+        this.emitSemitone(Math.max(-2, Math.min(2, gpShift)));
+      } else if (this.heldKeys.size === 0) {
+        this.emitSemitone(0);
+      }
+
       const startPressed = Boolean(b[9]?.pressed);
       if (startPressed && !this.prevGpButtons.get(9)) {
         if (document.body.dataset.state === 'title') {
-          this.callbacks.onStartOrConfirm();
+          this.callbacks.onStartOrConfirm?.();
         } else {
-          this.callbacks.onPauseToggle();
+          this.callbacks.onPauseToggle?.();
         }
       }
       this.prevGpButtons.set(9, startPressed);
 
-      // Reconcile held gamepad notes
       for (const note of desiredNotes) {
         if (!this.gamepadNotes.has(note)) {
           this.gamepadNotes.add(note);
-          this.callbacks.onNotePress(note);
+          this.callbacks.onNotePress?.(note);
         }
       }
       for (const note of Array.from(this.gamepadNotes)) {
         if (!desiredNotes.has(note)) {
           this.gamepadNotes.delete(note);
-          this.callbacks.onNoteRelease(note);
+          this.callbacks.onNoteRelease?.(note);
         }
       }
     }

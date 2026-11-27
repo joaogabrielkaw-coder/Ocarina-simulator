@@ -9,14 +9,15 @@ import { audioEngine } from './game/audioEngine';
 import { UnifiedInputManager } from './game/inputManager';
 import {
   buildSongSchedule,
+  CHALLENGE_SONGS,
   computeAccuracyPercent,
   computeHitPoints,
   evaluateNoteHit,
   GameMode,
   GamePhase,
+  GridNoteSpec,
   matchSongSequence,
   NoteId,
-  OCARINA_SONGS,
   OcarinaSong,
   ScheduledBeatNote,
   TIMING_WINDOW_GOOD,
@@ -69,14 +70,21 @@ function OcarinaGame() {
   const [hearts, setHearts] = useState(MAX_HALF_HEARTS);
   const [songIndex, setSongIndex] = useState(0);
   const [schedule, setSchedule] = useState<ScheduledBeatNote[]>(() =>
-    buildSongSchedule(OCARINA_SONGS[0], 1.6, 0.9),
+    buildSongSchedule(CHALLENGE_SONGS[0], 1.6, 0.9),
   );
   const [heldNotes, setHeldNotes] = useState<NoteId[]>([]);
+  const [heldGridIds, setHeldGridIds] = useState<string[]>([]);
+  const [lastGridSpec, setLastGridSpec] = useState<GridNoteSpec | null>(null);
   const [semitoneShift, setSemitoneShift] = useState(0);
+  const [vibratoActive, setVibratoActive] = useState(false);
   const [lastFeedback, setLastFeedback] = useState<{ grade: 'perfeito' | 'bom' | 'erro'; id: number } | null>(null);
   const [recognizedSong, setRecognizedSong] = useState<OcarinaSong | null>(null);
   const [recentFreeNotes, setRecentFreeNotes] = useState<NoteId[]>([]);
+  const [activeDemoSongId, setActiveDemoSongId] = useState<string | null>(null);
+  const [selectedPracticeSong, setSelectedPracticeSong] = useState<OcarinaSong | null>(null);
+  const [practiceStepIdx, setPracticeStepIdx] = useState(0);
   const [muted, setMuted] = useState(false);
+  const [crtEnabled, setCrtEnabled] = useState(true);
   const [gamepadName, setGamepadName] = useState<string | null>(null);
   const [runSummary, setRunSummary] = useState<RunSummary | null>(null);
 
@@ -87,6 +95,8 @@ function OcarinaGame() {
   const [leaderboardLoading, setLeaderboardLoading] = useState(true);
   const [cloudSaving, setCloudSaving] = useState(false);
   const [cloudStatusMsg, setCloudStatusMsg] = useState<string | null>(null);
+
+  const demoTimersRef = useRef<number[]>([]);
 
   // Mutable simulation refs so 60Hz loop & callbacks never stale-close
   const simRef = useRef({
@@ -104,8 +114,11 @@ function OcarinaGame() {
     songTimeSec: 0,
     semitoneShift: 0,
     heldSet: new Set<NoteId>(),
-    schedule: buildSongSchedule(OCARINA_SONGS[0], 1.6, 0.9),
+    heldGridSet: new Set<string>(),
+    schedule: buildSongSchedule(CHALLENGE_SONGS[0], 1.6, 0.9),
     recentFreeNotes: [] as NoteId[],
+    selectedPracticeSong: null as OcarinaSong | null,
+    practiceStepIdx: 0,
     feedbackCounter: 0,
     scoreboardOpen: false,
     playerName: readInitialName(),
@@ -154,7 +167,10 @@ function OcarinaGame() {
 
     audioEngine.stopAllNotes();
     s.heldSet.clear();
+    s.heldGridSet.clear();
     setHeldNotes([]);
+    setHeldGridIds([]);
+    setLastGridSpec(null);
     setRunSummary(snapshot);
     setPhase('gameover');
     document.body.dataset.state = 'gameover';
@@ -198,9 +214,27 @@ function OcarinaGame() {
     }
   }, [bestLocalScore, user]);
 
+  const stopDemo = useCallback(() => {
+    for (const tid of demoTimersRef.current) {
+      window.clearTimeout(tid);
+    }
+    demoTimersRef.current = [];
+    setActiveDemoSongId(null);
+    const s = simRef.current;
+    for (const note of Array.from(s.heldSet)) {
+      sceneRef.current?.pressHoleVisual(note, false);
+      audioEngine.stopNote(note);
+    }
+    s.heldSet.clear();
+    setHeldNotes([]);
+    s.semitoneShift = 0;
+    setSemitoneShift(0);
+    sceneRef.current?.setPitchShiftVisual(0);
+  }, []);
+
   const loadSongStage = useCallback((idx: number) => {
     const s = simRef.current;
-    const song = OCARINA_SONGS[idx];
+    const song = CHALLENGE_SONGS[idx];
     const tempoScale = 0.88 + idx * 0.055; // Smooth difficulty ramp across 6 songs
     const nextSched = buildSongSchedule(song, 1.55, tempoScale);
     s.songIndex = idx;
@@ -212,6 +246,7 @@ function OcarinaGame() {
 
   const startGame = useCallback(
     (targetMode: GameMode) => {
+      stopDemo();
       audioEngine.unlock();
       audioEngine.stopAllNotes();
       inputRef.current?.clearAllHeld();
@@ -227,15 +262,22 @@ function OcarinaGame() {
       s.missCount = 0;
       s.songsCompleted = 0;
       s.heldSet.clear();
+      s.heldGridSet.clear();
       s.recentFreeNotes = [];
+      s.selectedPracticeSong = null;
+      s.practiceStepIdx = 0;
 
       setMode(targetMode);
       setScore(0);
       setCombo(0);
       setHearts(MAX_HALF_HEARTS);
       setHeldNotes([]);
+      setHeldGridIds([]);
+      setLastGridSpec(null);
       setRecentFreeNotes([]);
       setRecognizedSong(null);
+      setSelectedPracticeSong(null);
+      setPracticeStepIdx(0);
       setLastFeedback(null);
       setRunSummary(null);
       setCloudStatusMsg(null);
@@ -246,77 +288,107 @@ function OcarinaGame() {
       document.body.dataset.state = 'playing';
       setPhase('playing');
     },
-    [loadSongStage],
+    [loadSongStage, stopDemo],
   );
+
+  const processPlayingGameplayNote = useCallback((note: NoteId) => {
+    const s = simRef.current;
+    if (s.phase !== 'playing') return;
+
+    if (s.mode === 'livre') {
+      const nextHist = [...s.recentFreeNotes, note].slice(-12);
+      s.recentFreeNotes = nextHist;
+      setRecentFreeNotes(nextHist);
+
+      // Update practice step progress if a Songbook melody is selected
+      if (s.selectedPracticeSong) {
+        const targetSeq = s.selectedPracticeSong.sequence;
+        if (targetSeq[s.practiceStepIdx] === note) {
+          const nextStep = s.practiceStepIdx + 1;
+          if (nextStep >= targetSeq.length) {
+            s.practiceStepIdx = 0;
+            setPracticeStepIdx(0);
+          } else {
+            s.practiceStepIdx = nextStep;
+            setPracticeStepIdx(nextStep);
+          }
+        } else if (targetSeq[0] === note) {
+          s.practiceStepIdx = 1;
+          setPracticeStepIdx(1);
+        } else {
+          s.practiceStepIdx = 0;
+          setPracticeStepIdx(0);
+        }
+      }
+
+      const matched = matchSongSequence(nextHist);
+      if (matched) {
+        setRecognizedSong(matched);
+        audioEngine.playSongFanfare();
+        sceneRef.current?.triggerSongAura(matched.auraColor);
+        s.recentFreeNotes = [];
+      }
+      return;
+    }
+
+    // Desafio Rhythm Mode: find closest pending matching note within timing window
+    let bestItem: ScheduledBeatNote | null = null;
+    let bestAbsDelta = Infinity;
+    for (const item of s.schedule) {
+      if (item.status !== 'pending' || item.note !== note) continue;
+      const absDelta = Math.abs(item.targetTimeSec - s.songTimeSec);
+      if (absDelta <= TIMING_WINDOW_GOOD && absDelta < bestAbsDelta) {
+        bestAbsDelta = absDelta;
+        bestItem = item;
+      }
+    }
+
+    if (bestItem) {
+      const grade = evaluateNoteHit(bestAbsDelta);
+      bestItem.status = 'hit';
+      bestItem.grade = grade;
+      s.combo += 1;
+      s.bestCombo = Math.max(s.bestCombo, s.combo);
+      if (grade === 'perfeito') s.perfectCount += 1;
+      else s.goodCount += 1;
+
+      const pts = computeHitPoints(grade, s.combo);
+      s.score += pts;
+      s.feedbackCounter += 1;
+
+      setScore(s.score);
+      setCombo(s.combo);
+      setLastFeedback({ grade, id: s.feedbackCounter });
+      setSchedule([...s.schedule]);
+      sceneRef.current?.setComboLevel(s.combo);
+    } else {
+      s.combo = 0;
+      s.missCount += 1;
+      s.feedbackCounter += 1;
+      setCombo(0);
+      setLastFeedback({ grade: 'erro', id: s.feedbackCounter });
+      sceneRef.current?.setComboLevel(0);
+    }
+  }, []);
 
   const handleNotePress = useCallback(
     (note: NoteId) => {
+      if (demoTimersRef.current.length > 0) {
+        stopDemo();
+      }
       audioEngine.unlock();
       const s = simRef.current;
       if (s.heldSet.has(note)) return;
 
       s.heldSet.add(note);
       setHeldNotes(Array.from(s.heldSet));
+      setLastGridSpec(null);
       sceneRef.current?.pressHoleVisual(note, true);
       audioEngine.startNote(note, s.semitoneShift);
 
-      if (s.phase !== 'playing') return;
-
-      if (s.mode === 'livre') {
-        const nextHist = [...s.recentFreeNotes, note].slice(-12);
-        s.recentFreeNotes = nextHist;
-        setRecentFreeNotes(nextHist);
-        const matched = matchSongSequence(nextHist);
-        if (matched) {
-          setRecognizedSong(matched);
-          audioEngine.playSongFanfare();
-          sceneRef.current?.triggerSongAura(matched.auraColor);
-          s.recentFreeNotes = [];
-        }
-        return;
-      }
-
-      // Desafio Rhythm Mode: find closest pending matching note within timing window
-      let bestItem: ScheduledBeatNote | null = null;
-      let bestAbsDelta = Infinity;
-      for (const item of s.schedule) {
-        if (item.status !== 'pending' || item.note !== note) continue;
-        const absDelta = Math.abs(item.targetTimeSec - s.songTimeSec);
-        if (absDelta <= TIMING_WINDOW_GOOD && absDelta < bestAbsDelta) {
-          bestAbsDelta = absDelta;
-          bestItem = item;
-        }
-      }
-
-      if (bestItem) {
-        const grade = evaluateNoteHit(bestAbsDelta);
-        bestItem.status = 'hit';
-        bestItem.grade = grade;
-        s.combo += 1;
-        s.bestCombo = Math.max(s.bestCombo, s.combo);
-        if (grade === 'perfeito') s.perfectCount += 1;
-        else s.goodCount += 1;
-
-        const pts = computeHitPoints(grade, s.combo);
-        s.score += pts;
-        s.feedbackCounter += 1;
-
-        setScore(s.score);
-        setCombo(s.combo);
-        setLastFeedback({ grade, id: s.feedbackCounter });
-        setSchedule([...s.schedule]);
-        sceneRef.current?.setComboLevel(s.combo);
-      } else {
-        // Stray wrong note inside Desafio mode breaks combo
-        s.combo = 0;
-        s.missCount += 1;
-        s.feedbackCounter += 1;
-        setCombo(0);
-        setLastFeedback({ grade: 'erro', id: s.feedbackCounter });
-        sceneRef.current?.setComboLevel(0);
-      }
+      processPlayingGameplayNote(note);
     },
-    [],
+    [processPlayingGameplayNote, stopDemo],
   );
 
   const handleNoteRelease = useCallback((note: NoteId) => {
@@ -328,15 +400,123 @@ function OcarinaGame() {
     audioEngine.stopNote(note);
   }, []);
 
+  const handleGridNotePress = useCallback(
+    (spec: GridNoteSpec) => {
+      if (demoTimersRef.current.length > 0) {
+        stopDemo();
+      }
+      audioEngine.unlock();
+      const s = simRef.current;
+      if (s.heldGridSet.has(spec.id)) return;
+
+      s.heldGridSet.add(spec.id);
+      setHeldGridIds(Array.from(s.heldGridSet));
+      setLastGridSpec(spec);
+      sceneRef.current?.pressHoleVisual(spec.mappedHole, true);
+      audioEngine.startCustomNote(`grid_${spec.id}`, spec.frequencyHz, s.semitoneShift);
+
+      const hintMap: Record<string, NoteId> = {
+        A: 'A',
+        '▼': 'DOWN',
+        '▶': 'RIGHT',
+        '◀': 'LEFT',
+        '▲': 'UP',
+      };
+      const gameplayNote = spec.zeldaHint ? hintMap[spec.zeldaHint] ?? spec.mappedHole : spec.mappedHole;
+      processPlayingGameplayNote(gameplayNote);
+    },
+    [processPlayingGameplayNote, stopDemo],
+  );
+
+  const handleGridNoteRelease = useCallback((spec: GridNoteSpec) => {
+    const s = simRef.current;
+    if (!s.heldGridSet.has(spec.id)) return;
+    s.heldGridSet.delete(spec.id);
+    setHeldGridIds(Array.from(s.heldGridSet));
+    if (s.heldGridSet.size === 0) {
+      setLastGridSpec(null);
+    }
+    sceneRef.current?.pressHoleVisual(spec.mappedHole, false);
+    audioEngine.stopCustomNote(`grid_${spec.id}`);
+  }, []);
+
   const handleSemitoneChange = useCallback((shift: number) => {
     simRef.current.semitoneShift = shift;
     setSemitoneShift(shift);
+    sceneRef.current?.setPitchShiftVisual(shift);
     audioEngine.updateBend(shift, sceneRef.current?.getVibratoIntensity() ?? 0);
   }, []);
+
+  const handleVibratoToggle = useCallback((active: boolean) => {
+    setVibratoActive(active);
+    audioEngine.setVibratoOverride(active);
+  }, []);
+
+  const handleSelectPracticeSong = useCallback((song: OcarinaSong | null) => {
+    simRef.current.selectedPracticeSong = song;
+    simRef.current.practiceStepIdx = 0;
+    setSelectedPracticeSong(song);
+    setPracticeStepIdx(0);
+  }, []);
+
+  const handlePlayDemo = useCallback(
+    (song: OcarinaSong) => {
+      stopDemo();
+      audioEngine.unlock();
+      setActiveDemoSongId(song.id);
+      setRecognizedSong(null);
+      simRef.current.selectedPracticeSong = song;
+      simRef.current.practiceStepIdx = 0;
+      setSelectedPracticeSong(song);
+      setPracticeStepIdx(0);
+
+      let maxEndMs = 0;
+      song.demoSteps.forEach((step) => {
+        const startMs = Math.round(step.startSec * 1000);
+        const endMs = Math.round((step.startSec + step.durationSec) * 1000);
+        maxEndMs = Math.max(maxEndMs, endMs);
+
+        const tStart = window.setTimeout(() => {
+          const shift = step.semitone ?? 0;
+          simRef.current.semitoneShift = shift;
+          setSemitoneShift(shift);
+          sceneRef.current?.setPitchShiftVisual(shift);
+          simRef.current.heldSet.add(step.note);
+          setHeldNotes(Array.from(simRef.current.heldSet));
+          sceneRef.current?.pressHoleVisual(step.note, true);
+          audioEngine.startNote(step.note, shift);
+        }, startMs);
+
+        const tEnd = window.setTimeout(() => {
+          simRef.current.heldSet.delete(step.note);
+          setHeldNotes(Array.from(simRef.current.heldSet));
+          sceneRef.current?.pressHoleVisual(step.note, false);
+          audioEngine.stopNote(step.note);
+        }, endMs);
+
+        demoTimersRef.current.push(tStart, tEnd);
+      });
+
+      const tFinish = window.setTimeout(() => {
+        demoTimersRef.current = [];
+        setActiveDemoSongId(null);
+        simRef.current.semitoneShift = 0;
+        setSemitoneShift(0);
+        sceneRef.current?.setPitchShiftVisual(0);
+        setRecognizedSong(song);
+        audioEngine.playSongFanfare();
+        sceneRef.current?.triggerSongAura(song.auraColor);
+      }, maxEndMs + 180);
+
+      demoTimersRef.current.push(tFinish);
+    },
+    [stopDemo],
+  );
 
   const handlePauseToggle = useCallback(() => {
     const s = simRef.current;
     if (s.phase === 'playing') {
+      stopDemo();
       audioEngine.stopAllNotes();
       inputRef.current?.clearAllHeld();
       setPhase('paused');
@@ -345,7 +525,7 @@ function OcarinaGame() {
       setPhase('playing');
       document.body.dataset.state = 'playing';
     }
-  }, []);
+  }, [stopDemo]);
 
   const handleMuteToggle = useCallback(() => {
     setMuted((prev) => {
@@ -375,7 +555,10 @@ function OcarinaGame() {
     const input = new UnifiedInputManager({
       onNotePress: (n) => handleNotePress(n),
       onNoteRelease: (n) => handleNoteRelease(n),
+      onGridNotePress: (spec) => handleGridNotePress(spec),
+      onGridNoteRelease: (spec) => handleGridNoteRelease(spec),
       onSemitoneChange: (shift) => handleSemitoneChange(shift),
+      onVibratoToggle: (active) => handleVibratoToggle(active),
       onAnalogTilt: (tx, ty) => {
         sceneRef.current?.setPointerTilt(tx, ty);
         audioEngine.updateBend(
@@ -407,11 +590,23 @@ function OcarinaGame() {
     }
 
     return () => {
+      stopDemo();
       input.dispose();
       scene.dispose();
       audioEngine.stopAllNotes();
     };
-  }, [handleMuteToggle, handleNotePress, handleNoteRelease, handlePauseToggle, handleSemitoneChange, startGame]);
+  }, [
+    handleGridNotePress,
+    handleGridNoteRelease,
+    handleMuteToggle,
+    handleNotePress,
+    handleNoteRelease,
+    handlePauseToggle,
+    handleSemitoneChange,
+    handleVibratoToggle,
+    startGame,
+    stopDemo,
+  ]);
 
   // 60Hz Rhythm Chart Simulation Loop (Zero React setState unless discrete miss/song clear occurs)
   useEffect(() => {
@@ -466,7 +661,7 @@ function OcarinaGame() {
           const lastNoteEnd = s.schedule[s.schedule.length - 1].targetTimeSec + 0.55;
           if (s.songTimeSec >= lastNoteEnd) {
             // Song Completed!
-            const currentSong = OCARINA_SONGS[s.songIndex];
+            const currentSong = CHALLENGE_SONGS[s.songIndex];
             s.songsCompleted += 1;
             s.score += 500;
             s.hearts = Math.min(MAX_HALF_HEARTS, s.hearts + 2);
@@ -475,7 +670,7 @@ function OcarinaGame() {
             audioEngine.playSongFanfare();
             sceneRef.current?.triggerSongAura(currentSong.auraColor);
 
-            if (s.songIndex + 1 >= OCARINA_SONGS.length) {
+            if (s.songIndex + 1 >= CHALLENGE_SONGS.length) {
               finishRun(true);
             } else {
               loadSongStage(s.songIndex + 1);
@@ -548,9 +743,24 @@ function OcarinaGame() {
   const cloudTopScore = leaderboard.length > 0 ? leaderboard[0].score : null;
 
   return (
-    <main className="relative h-screen w-screen overflow-hidden bg-[#0b1622]">
+    <main
+      className={`relative h-[100dvh] w-screen overflow-hidden bg-[#04060f] ${
+        crtEnabled ? 'crt-active' : ''
+      }`}
+    >
       {/* Isolated WebGL Mount Container (Never re-renders on React HUD updates) */}
       <div ref={canvasMountRef} className="fixed inset-0 z-0" />
+      {crtEnabled && (
+        <div
+          data-testid="crt-tv-overlay"
+          aria-hidden="true"
+          className="pointer-events-none fixed inset-0 z-30 overflow-hidden"
+        >
+          <div className="crt-phosphor-scanlines absolute inset-0" />
+          <div className="crt-scan-beam absolute inset-x-0 h-24" />
+          <div className="crt-tube-glass absolute inset-[2px] sm:inset-[4px]" />
+        </div>
+      )}
 
       {phase === 'title' && !scoreboardOpen && (
         <TitleOverlay
@@ -568,15 +778,22 @@ function OcarinaGame() {
           combo={combo}
           hearts={hearts}
           maxHearts={MAX_HALF_HEARTS}
-          activeSong={OCARINA_SONGS[songIndex]}
+          activeSong={CHALLENGE_SONGS[songIndex]}
           songIndex={songIndex}
-          totalSongs={OCARINA_SONGS.length}
+          totalSongs={CHALLENGE_SONGS.length}
           heldNotes={heldNotes}
+          heldGridIds={heldGridIds}
+          lastGridSpec={lastGridSpec}
           semitoneShift={semitoneShift}
+          vibratoActive={vibratoActive}
           lastFeedback={lastFeedback}
           recognizedSong={recognizedSong}
           recentFreeNotes={recentFreeNotes}
+          activeDemoSongId={activeDemoSongId}
+          selectedPracticeSong={selectedPracticeSong}
+          practiceStepIdx={practiceStepIdx}
           muted={muted}
+          crtEnabled={crtEnabled}
           scoreboardOpen={scoreboardOpen}
           gamepadName={gamepadName}
           schedule={schedule}
@@ -584,9 +801,15 @@ function OcarinaGame() {
           onSwitchMode={(m) => startGame(m)}
           onToggleScoreboard={() => setScoreboardOpen((o) => !o)}
           onToggleMute={handleMuteToggle}
+          onToggleCrt={() => setCrtEnabled((prev) => !prev)}
           onPause={handlePauseToggle}
-          onPadPress={handleNotePress}
-          onPadRelease={handleNoteRelease}
+          onGridPress={handleGridNotePress}
+          onGridRelease={handleGridNoteRelease}
+          onSemitoneChange={handleSemitoneChange}
+          onVibratoToggle={handleVibratoToggle}
+          onSelectPracticeSong={handleSelectPracticeSong}
+          onPlayDemo={handlePlayDemo}
+          onStopDemo={stopDemo}
         />
       )}
 
@@ -601,6 +824,7 @@ function OcarinaGame() {
           onResume={handlePauseToggle}
           onRestart={() => startGame(mode)}
           onReturnTitle={() => {
+            stopDemo();
             audioEngine.stopAllNotes();
             setScoreboardOpen(false);
             setPhase('title');

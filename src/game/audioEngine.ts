@@ -1,14 +1,14 @@
-import { computeNoteFrequency, NoteId } from './musicData';
+import { computeNoteFrequency, NoteId, OCARINA_NOTES } from './musicData';
 
 interface ActiveVoice {
-  note: NoteId;
+  key: string;
+  unshiftedFreq: number;
   oscMain: OscillatorNode;
   oscHarmonic: OscillatorNode;
   lfoGain: GainNode;
   voiceGain: GainNode;
   breathSource: AudioBufferSourceNode;
   breathGain: GainNode;
-  baseFreq: number;
 }
 
 class OcarinaAudioEngine {
@@ -16,9 +16,10 @@ class OcarinaAudioEngine {
   private masterGain: GainNode | null = null;
   private reverbInput: GainNode | null = null;
   private noiseBuffer: AudioBuffer | null = null;
-  private voices = new Map<NoteId, ActiveVoice>();
+  private voices = new Map<string, ActiveVoice>();
   private muted = false;
   private vibratoAmount = 0;
+  private manualVibrato = false;
 
   private ensureContext(): AudioContext | null {
     if (typeof window === 'undefined') return null;
@@ -85,12 +86,16 @@ class OcarinaAudioEngine {
   }
 
   public startNote(note: NoteId, semitoneShift = 0): void {
-    if (this.voices.has(note)) return;
+    this.startCustomNote(note, OCARINA_NOTES[note].frequencyHz, semitoneShift);
+  }
+
+  public startCustomNote(voiceKey: string, unshiftedHz: number, semitoneShift = 0): void {
+    if (this.voices.has(voiceKey)) return;
     const ctx = this.ensureContext();
     if (!ctx || !this.masterGain || !this.reverbInput || !this.noiseBuffer) return;
 
     const now = ctx.currentTime;
-    const freq = computeNoteFrequency(note, semitoneShift);
+    const freq = semitoneShift === 0 ? unshiftedHz : unshiftedHz * Math.pow(2, semitoneShift / 12);
 
     // Ceramic Ocarina tone: pure sine fundamental + gentle triangle overtone + subtle breath
     const oscMain = ctx.createOscillator();
@@ -111,11 +116,12 @@ class OcarinaAudioEngine {
     toneFilter.frequency.value = freq * 4.2;
 
     // Vibrato LFO
+    const effectiveVibrato = Math.max(this.vibratoAmount, this.manualVibrato ? 0.9 : 0);
     const lfo = ctx.createOscillator();
     lfo.type = 'sine';
     lfo.frequency.value = 5.4;
     const lfoGain = ctx.createGain();
-    lfoGain.gain.value = 1.8 + this.vibratoAmount * 7.5;
+    lfoGain.gain.value = 1.8 + effectiveVibrato * 8.5;
     lfo.connect(lfoGain);
     lfoGain.connect(oscMain.frequency);
 
@@ -157,34 +163,52 @@ class OcarinaAudioEngine {
     lfo.start(now);
     breathSource.start(now);
 
-    this.voices.set(note, {
-      note,
+    this.voices.set(voiceKey, {
+      key: voiceKey,
+      unshiftedFreq: unshiftedHz,
       oscMain,
       oscHarmonic,
       lfoGain,
       voiceGain,
       breathSource,
       breathGain,
-      baseFreq: freq,
     });
+  }
+
+  public setVibratoOverride(active: boolean): void {
+    this.manualVibrato = active;
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const effectiveVibrato = Math.max(this.vibratoAmount, this.manualVibrato ? 0.9 : 0);
+    for (const voice of this.voices.values()) {
+      voice.lfoGain.gain.setTargetAtTime(1.8 + effectiveVibrato * 8.5, now, 0.02);
+    }
   }
 
   public updateBend(semitoneShift: number, vibratoAmount: number): void {
     this.vibratoAmount = vibratoAmount;
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
+    const effectiveVibrato = Math.max(vibratoAmount, this.manualVibrato ? 0.9 : 0);
     for (const voice of this.voices.values()) {
-      const targetFreq = computeNoteFrequency(voice.note, semitoneShift);
+      const targetFreq =
+        voice.key in OCARINA_NOTES
+          ? computeNoteFrequency(voice.key as NoteId, semitoneShift)
+          : voice.unshiftedFreq * Math.pow(2, semitoneShift / 12);
       voice.oscMain.frequency.setTargetAtTime(targetFreq, now, 0.015);
       voice.oscHarmonic.frequency.setTargetAtTime(targetFreq * 2, now, 0.015);
-      voice.lfoGain.gain.setTargetAtTime(1.8 + vibratoAmount * 8.5, now, 0.02);
+      voice.lfoGain.gain.setTargetAtTime(1.8 + effectiveVibrato * 8.5, now, 0.02);
     }
   }
 
   public stopNote(note: NoteId): void {
-    const voice = this.voices.get(note);
+    this.stopCustomNote(note);
+  }
+
+  public stopCustomNote(voiceKey: string): void {
+    const voice = this.voices.get(voiceKey);
     if (!voice || !this.ctx) return;
-    this.voices.delete(note);
+    this.voices.delete(voiceKey);
 
     const now = this.ctx.currentTime;
     voice.voiceGain.gain.cancelScheduledValues(now);
@@ -203,7 +227,7 @@ class OcarinaAudioEngine {
 
   public stopAllNotes(): void {
     for (const id of Array.from(this.voices.keys())) {
-      this.stopNote(id);
+      this.stopCustomNote(id);
     }
   }
 

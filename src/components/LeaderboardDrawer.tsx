@@ -53,7 +53,7 @@ export const LeaderboardDrawer: React.FC<LeaderboardDrawerProps> = ({
   return (
     <aside
       aria-label="Placar Global na Nuvem"
-      className="fixed top-4 bottom-4 left-4 z-30 flex w-[min(410px,calc(100vw-2rem))] flex-col border-2 border-[#d4af37]/75 bg-[#0b1726]/95 p-5 shadow-2xl"
+      className="fixed top-[max(0.75rem,env(safe-area-inset-top))] bottom-[max(0.75rem,env(safe-area-inset-bottom))] left-[max(0.75rem,env(safe-area-inset-left))] z-30 flex w-[min(410px,calc(100vw-1.5rem))] flex-col border-2 border-[#d4af37]/75 bg-[#0b1726]/95 p-4 shadow-2xl sm:top-4 sm:bottom-4 sm:left-4 sm:w-[min(410px,calc(100vw-2rem))] sm:p-5"
     >
       <div className="flex items-start justify-between border-b border-[#d4af37]/30 pb-3">
         <div>

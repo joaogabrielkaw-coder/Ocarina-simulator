@@ -41,12 +41,12 @@ export const StatusModal: React.FC<StatusModalProps> = ({
 
   if (phase === 'paused') {
     return (
-      <div className="fixed inset-0 z-40 flex items-center justify-center bg-[#060d16]/75 p-4">
+      <div className="fixed inset-0 z-40 flex items-center justify-center bg-[#060d16]/75 p-3 sm:p-4">
         <div
           role="dialog"
           aria-modal="true"
           aria-label="Jogo Pausado"
-          className="w-full max-w-sm border-2 border-[#d4af37]/70 bg-[#0e1b2b] p-6 shadow-2xl"
+          className="hyrule-scroll max-h-[92dvh] w-full max-w-sm overflow-y-auto border-2 border-[#d4af37]/70 bg-[#0e1b2b] p-5 shadow-2xl sm:p-6"
         >
           <h2 className="font-display text-center text-2xl font-bold tracking-wider text-[#fde68a]">
             PAUSADO
@@ -111,12 +111,12 @@ export const StatusModal: React.FC<StatusModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-[#060d16]/78 p-4">
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-[#060d16]/78 p-3 sm:p-4">
       <div
         role="dialog"
         aria-modal="true"
         aria-label={run.victory ? 'Desafio Concluído' : 'Fim de Jogo'}
-        className="w-full max-w-md border-2 border-[#d4af37]/80 bg-[#0e1b2b] p-6 shadow-2xl"
+        className="hyrule-scroll max-h-[92dvh] w-full max-w-md overflow-y-auto border-2 border-[#d4af37]/80 bg-[#0e1b2b] p-5 shadow-2xl sm:p-6"
       >
         <div className="text-center">
           <p className="text-xs font-bold tracking-[0.22em] text-[#5eead4] uppercase">

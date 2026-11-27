@@ -15,12 +15,12 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
   cloudTopScore,
 }) => {
   return (
-    <div className="pointer-events-none fixed inset-0 z-20 flex flex-col justify-between p-6 md:p-12">
+    <div className="pointer-events-none fixed inset-0 z-20 flex flex-col justify-between px-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[max(1rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] md:p-12">
       {/* Upper-left calm negative-space lockup */}
-      <div className="pointer-events-auto max-w-xl pt-2 md:pt-6">
+      <div className="pointer-events-auto max-w-xl pt-1 sm:pt-2 md:pt-6">
         <svg
           viewBox="0 0 490 156"
-          className="w-full max-w-[440px] drop-shadow-[0_6px_18px_rgba(0,0,0,0.65)]"
+          className="landscape-title-crest w-full max-w-[300px] drop-shadow-[0_6px_18px_rgba(0,0,0,0.65)] sm:max-w-[440px]"
           role="img"
           aria-label="Ocarina Simulator"
         >
@@ -96,7 +96,7 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
         </svg>
 
         {(bestLocalScore > 0 || cloudTopScore !== null) && (
-          <div className="mt-2 flex items-center gap-5 text-xs font-semibold tracking-wider text-slate-200 hud-text-stroke">
+          <div className="mt-1.5 flex items-center gap-4 text-[11px] font-semibold tracking-wider text-slate-200 hud-text-stroke sm:mt-2 sm:gap-5 sm:text-xs">
             {bestLocalScore > 0 && (
               <span>
                 SEU RECORDE: <strong className="font-mono-num text-[#fde68a]">{bestLocalScore}</strong>
@@ -111,7 +111,7 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
         )}
 
         {/* Primary CTA + max 2 secondary actions */}
-        <div className="mt-7 flex flex-wrap items-center gap-3">
+        <div className="landscape-title-actions mt-4 flex flex-wrap items-center gap-2.5 sm:mt-7 sm:gap-3">
           <button
             type="button"
             data-start="true"
@@ -119,7 +119,7 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
               e.currentTarget.blur();
               onStart('desafio');
             }}
-            className="cursor-pointer border-2 border-[#fde68a] bg-[#d4af37] px-7 py-3.5 text-base font-bold tracking-wide text-[#09131f] shadow-[0_6px_0_#7c5c10] transition-transform hover:-translate-y-0.5 active:translate-y-0.5"
+            className="min-h-[46px] cursor-pointer border-2 border-[#fde68a] bg-[#d4af37] px-5 py-2.5 text-sm font-bold tracking-wide text-[#09131f] shadow-[0_5px_0_#7c5c10] transition-transform hover:-translate-y-0.5 active:translate-y-0.5 sm:px-7 sm:py-3.5 sm:text-base sm:shadow-[0_6px_0_#7c5c10]"
           >
             Iniciar Desafio Musical
           </button>
@@ -130,7 +130,7 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
               e.currentTarget.blur();
               onStart('livre');
             }}
-            className="cursor-pointer border border-[#5eead4]/55 bg-[#0d1c2e]/90 px-5 py-3.5 text-sm font-semibold text-[#d9f9f5] transition-colors hover:border-[#5eead4] hover:bg-[#132942]"
+            className="min-h-[44px] cursor-pointer border border-[#5eead4]/55 bg-[#0d1c2e]/90 px-4 py-2.5 text-xs font-semibold text-[#d9f9f5] transition-colors hover:border-[#5eead4] hover:bg-[#132942] sm:px-5 sm:py-3.5 sm:text-sm"
           >
             Modo Livre
           </button>
@@ -141,7 +141,7 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
               e.currentTarget.blur();
               onOpenScoreboard();
             }}
-            className="cursor-pointer border border-[#d4af37]/50 bg-[#0d1c2e]/90 px-5 py-3.5 text-sm font-semibold text-[#fde68a] transition-colors hover:border-[#d4af37] hover:bg-[#132942]"
+            className="min-h-[44px] cursor-pointer border border-[#d4af37]/50 bg-[#0d1c2e]/90 px-4 py-2.5 text-xs font-semibold text-[#fde68a] transition-colors hover:border-[#d4af37] hover:bg-[#132942] sm:px-5 sm:py-3.5 sm:text-sm"
           >
             Placar Global
           </button>
@@ -149,8 +149,13 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
       </div>
 
       {/* Single flat borderless control hint line */}
-      <div className="text-center text-xs font-medium tracking-wide text-slate-300/90 hud-text-stroke">
-        Toque nos furos 3D ou use Setas / WASD + Espaço · Shift/Alt Meio-Tom · Controle Gamepad · Enter Iniciar
+      <div className="text-center text-[11px] font-medium tracking-wide text-slate-300/90 hud-text-stroke sm:text-xs">
+        <span className="sm:hidden">
+          Toque nos 15 botões ou na Ocarina 3D · Arraste para vibrato · Controle Bluetooth
+        </span>
+        <span className="hidden sm:inline">
+          Teclado 3×5 (Q–T / A–G / Z–B) · Setas + Espaço · Shift/Alt (±1) · [/] (±2) · ; Vibrato · Gamepad · Enter Iniciar
+        </span>
       </div>
     </div>
   );

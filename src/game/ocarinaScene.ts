@@ -8,6 +8,16 @@ import {
   stepOcarinaPhysics,
 } from './physics';
 import type { LeaderboardEntry } from '../services/leaderboardService';
+import {
+  CatRig,
+  createCompanionCat,
+  createMoonlitVillageAndFishermen,
+  createMusicianCharacter,
+  MusicianRig,
+  updateCatRig,
+  updateMusicianRig,
+  VillagePropsRig,
+} from './characterModels';
 
 export type CameraFocusMode = 'title' | 'playing' | 'scoreboard';
 
@@ -75,10 +85,11 @@ function createSkyGradientTexture(): THREE.CanvasTexture {
   canvas.height = 256;
   const ctx = canvas.getContext('2d')!;
   const grad = ctx.createLinearGradient(0, 0, 0, 256);
-  grad.addColorStop(0, '#0a1628');
-  grad.addColorStop(0.45, '#132a44');
-  grad.addColorStop(0.82, '#1f445c');
-  grad.addColorStop(1, '#264d59');
+  grad.addColorStop(0, '#040514');
+  grad.addColorStop(0.32, '#0e0b2e');
+  grad.addColorStop(0.58, '#261459');
+  grad.addColorStop(0.76, '#391b72');
+  grad.addColorStop(1, '#101d47');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, 16, 256);
   const tex = new THREE.CanvasTexture(canvas);
@@ -86,16 +97,8 @@ function createSkyGradientTexture(): THREE.CanvasTexture {
   return tex;
 }
 
-function groundHeightAt(x: number, z: number): number {
-  const r = Math.hypot(x, z);
-  if (r < 6.5) return 0;
-  const edge = Math.min(1, (r - 6.5) / 14);
-  return (
-    edge *
-    (Math.sin(x * 0.18) * Math.cos(z * 0.16) * 0.85 +
-      Math.max(0, (r - 18) * 0.12))
-  );
-}
+const WATER_LEVEL = -0.38;
+const ISLAND_TOP_Y = 0.36;
 
 export interface SceneCallbacks {
   onHolePress: (note: NoteId) => void;
@@ -118,6 +121,9 @@ export class OcarinaSceneController {
   private auraRingMesh!: THREE.Mesh;
   private auraLight!: THREE.PointLight;
   private pillarRunes: THREE.Mesh[] = [];
+  private musicianRig!: MusicianRig;
+  private catRig!: CatRig;
+  private villageRig!: VillagePropsRig;
 
   private holeButtonMeshes = new Map<NoteId, THREE.Mesh>();
   private holeGlowRings = new Map<NoteId, THREE.Mesh>();
@@ -132,17 +138,21 @@ export class OcarinaSceneController {
 
   private physics: OcarinaPhysicsState = createOcarinaPhysicsState();
   private heldNotes = new Set<NoteId>();
-  private activePointerHole: NoteId | null = null;
-  private isDraggingTilt = false;
+  private pointerHoleMap = new Map<number, NoteId>();
+  private tiltPointerId: number | null = null;
   private dragStart = { x: 0, y: 0 };
 
+  private waterRipples!: THREE.InstancedMesh;
+  private rippleCount = 54;
+  private rippleMeta: Array<{ x: number; z: number; baseW: number; phase: number; isGold: boolean }> = [];
   private cameraMode: CameraFocusMode = 'title';
-  private camPosCurrent = new THREE.Vector3(0, 2.2, 5.2);
-  private camLookCurrent = new THREE.Vector3(0, 1.05, 0);
+  private camPosCurrent = new THREE.Vector3(0.05, 1.65, 3.6);
+  private camLookCurrent = new THREE.Vector3(0.1, 0.96, -0.3);
   private shakeTrauma = 0;
   private hitstopTimer = 0;
   private auraBoost = 0;
   private auraColor = new THREE.Color('#38bdf8');
+  private pitchShiftVisual = 0;
   private comboLevel = 0;
 
   private raycaster = new THREE.Raycaster();
@@ -198,7 +208,8 @@ export class OcarinaSceneController {
 
     this.scene = new THREE.Scene();
     this.scene.background = createSkyGradientTexture();
-    this.scene.fog = new THREE.FogExp2(0x16293d, 0.022);
+    this.scene.fog = new THREE.FogExp2(0x0c0b29, 0.016);
+    this.scene.environmentIntensity = 0.22;
 
     const pmremGenerator = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pmremGenerator.fromScene(
@@ -213,6 +224,7 @@ export class OcarinaSceneController {
 
     this.buildLighting();
     this.buildWorldClearing();
+    this.buildCharactersAndVillage();
     this.buildOcarinaHero();
     this.buildFairyCompanion();
     this.buildScoreboardMonolith();
@@ -226,37 +238,40 @@ export class OcarinaSceneController {
     this.resizeObserver = new ResizeObserver(() => this.handleResize());
     this.resizeObserver.observe(container);
     window.addEventListener('resize', this.handleResize);
+    window.visualViewport?.addEventListener('resize', this.handleResize);
 
     this.clock.start();
     this.tick();
   }
 
   private buildLighting(): void {
-    const hemi = new THREE.HemisphereLight(0x8ac4ff, 0x1b3a2c, 0.9);
+    const hemi = new THREE.HemisphereLight(0x4f46e5, 0x0d1024, 0.55);
     this.scene.add(hemi);
 
-    const keyLight = new THREE.DirectionalLight(0xffe8b8, 2.15);
-    keyLight.position.set(6.5, 11.5, 7.0);
-    keyLight.castShadow = true;
-    keyLight.shadow.mapSize.width = 1024;
-    keyLight.shadow.mapSize.height = 1024;
-    keyLight.shadow.camera.near = 1;
-    keyLight.shadow.camera.far = 32;
-    const d = 10;
-    keyLight.shadow.camera.left = -d;
-    keyLight.shadow.camera.right = d;
-    keyLight.shadow.camera.top = d;
-    keyLight.shadow.camera.bottom = -d;
-    keyLight.shadow.bias = -0.0005;
-    keyLight.shadow.normalBias = 0.02;
-    this.scene.add(keyLight);
+    // Warm golden streetlamp / lantern key light matching the reference character & cat glow
+    const warmKeyLight = new THREE.DirectionalLight(0xffa94d, 2.75);
+    warmKeyLight.position.set(-2.4, 5.0, 5.6);
+    warmKeyLight.castShadow = true;
+    warmKeyLight.shadow.mapSize.width = 1024;
+    warmKeyLight.shadow.mapSize.height = 1024;
+    warmKeyLight.shadow.camera.near = 1;
+    warmKeyLight.shadow.camera.far = 26;
+    const d = 8;
+    warmKeyLight.shadow.camera.left = -d;
+    warmKeyLight.shadow.camera.right = d;
+    warmKeyLight.shadow.camera.top = d;
+    warmKeyLight.shadow.camera.bottom = -d;
+    warmKeyLight.shadow.bias = -0.0005;
+    warmKeyLight.shadow.normalBias = 0.02;
+    this.scene.add(warmKeyLight);
 
-    const rimLight = new THREE.DirectionalLight(0x52b6ff, 0.9);
-    rimLight.position.set(-7, 5, -6);
-    this.scene.add(rimLight);
+    // Cool indigo-violet moonlight rim from behind
+    const moonRim = new THREE.DirectionalLight(0x6366f1, 0.85);
+    moonRim.position.set(4.5, 6.0, -7.5);
+    this.scene.add(moonRim);
 
-    this.auraLight = new THREE.PointLight(0x38bdf8, 1.4, 8.5, 2);
-    this.auraLight.position.set(0, 1.8, 0.6);
+    this.auraLight = new THREE.PointLight(0x38bdf8, 0.85, 6.5, 2);
+    this.auraLight.position.set(0.42, 1.35, 0.75);
     this.scene.add(this.auraLight);
   }
 
@@ -264,131 +279,307 @@ export class OcarinaSceneController {
     const bumpTex = createProceduralStoneBumpTexture();
     bumpTex.repeat.set(3, 3);
 
-    // 1. Continuous outdoor low-poly meadow terrain (zero indoor walls)
-    const terrainGeo = new THREE.PlaneGeometry(110, 110, 38, 38);
-    terrainGeo.rotateX(-Math.PI / 2);
-    const posAttr = terrainGeo.attributes.position;
-    const colors = new Float32Array(posAttr.count * 3);
-    for (let i = 0; i < posAttr.count; i++) {
-      const x = posAttr.getX(i);
-      const z = posAttr.getZ(i);
-      const y = groundHeightAt(x, z);
-      posAttr.setY(i, y);
-
-      const dist = Math.hypot(x, z);
-      const t = Math.min(1, dist / 24);
-      _color.setHex(0x28543d).lerp(_color.clone().setHex(0x18342a), t);
-      colors[i * 3] = _color.r;
-      colors[i * 3 + 1] = _color.g;
-      colors[i * 3 + 2] = _color.b;
-    }
-    terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    terrainGeo.computeVertexNormals();
-
-    const terrainMat = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.92,
-      metalness: 0.02,
+    // 1. Broad Moonlit Deep Indigo Water Plane
+    const waterGeo = new THREE.PlaneGeometry(130, 130, 1, 1);
+    waterGeo.rotateX(-Math.PI / 2);
+    const waterMat = new THREE.MeshStandardMaterial({
+      color: 0x07143a,
+      emissive: 0x030a24,
+      emissiveIntensity: 0.65,
+      roughness: 0.36,
+      metalness: 0.34,
       flatShading: true,
     });
-    const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
-    terrainMesh.receiveShadow = true;
-    this.scene.add(terrainMesh);
+    const waterMesh = new THREE.Mesh(waterGeo, waterMat);
+    waterMesh.position.y = WATER_LEVEL;
+    waterMesh.receiveShadow = true;
+    this.scene.add(waterMesh);
 
-    // 2. Central stepped octagonal Hylian Stone Altar (3-part composite)
+    // Instanced golden-amber & cyan water reflection ripples (matching left-side village reflection)
+    const rippleGeo = new THREE.PlaneGeometry(1, 0.08);
+    rippleGeo.rotateX(-Math.PI / 2);
+    const rippleMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.84,
+    });
+    this.waterRipples = new THREE.InstancedMesh(rippleGeo, rippleMat, this.rippleCount);
+    const dummy = new THREE.Object3D();
+    for (let i = 0; i < this.rippleCount; i++) {
+      const lane = i % 3;
+      const rx = -0.85 - (i % 7) * 0.48 - lane * 0.35 + Math.sin(i * 3.1) * 0.25;
+      const rz = 0.6 - Math.floor(i / 3) * 0.52;
+      const baseW = 0.34 + (i % 5) * 0.16;
+      const isGold = i % 5 !== 0;
+      this.rippleMeta.push({ x: rx, z: rz, baseW, phase: i * 0.73, isGold });
+      dummy.position.set(rx, WATER_LEVEL + 0.014, rz);
+      dummy.scale.set(baseW, 1, 1);
+      dummy.updateMatrix();
+      this.waterRipples.setMatrixAt(i, dummy.matrix);
+      _color.setHex(isGold ? (i % 2 === 0 ? 0xf59e0b : 0xfbbf24) : 0x38bdf8);
+      this.waterRipples.setColorAt(i, _color);
+    }
+    this.waterRipples.computeBoundingSphere();
+    this.scene.add(this.waterRipples);
+
+    // 2. Curved Stone Island Terrace (front-left cliff edge stops right under Musician's hips at z≈0.18)
     const stoneMat = new THREE.MeshStandardMaterial({
-      color: 0x5c6b7a,
-      roughness: 0.86,
-      metalness: 0.08,
+      color: 0x423a42,
+      roughness: 0.9,
+      metalness: 0.04,
       flatShading: true,
       bumpMap: bumpTex,
       bumpScale: 0.04,
     });
-    const mossStoneMat = new THREE.MeshStandardMaterial({
-      color: 0x456358,
-      roughness: 0.9,
+    const darkCliffMat = new THREE.MeshStandardMaterial({
+      color: 0x1e2230,
+      roughness: 0.94,
+      metalness: 0.03,
+      flatShading: true,
+    });
+    const parapetMat = new THREE.MeshStandardMaterial({
+      color: 0x333547,
+      roughness: 0.88,
       metalness: 0.05,
       flatShading: true,
     });
 
-    const altarGroup = new THREE.Group();
-    const step1 = new THREE.Mesh(new THREE.CylinderGeometry(3.3, 3.6, 0.24, 8), mossStoneMat);
-    step1.position.y = 0.12;
-    step1.receiveShadow = true;
-    altarGroup.add(step1);
+    const islandGroup = new THREE.Group();
+    // Main curved cobblestone island terrace (sits cleanly behind Musician's legs while supporting Cat & tower)
+    const cliffBody = new THREE.Mesh(new THREE.CylinderGeometry(2.15, 2.26, 0.72, 18), darkCliffMat);
+    cliffBody.position.set(2.18, 0.0, -1.55);
+    cliffBody.scale.set(1.14, 1, 0.86);
+    cliffBody.castShadow = true;
+    cliffBody.receiveShadow = true;
+    islandGroup.add(cliffBody);
 
-    const step2 = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 2.5, 0.28, 8), stoneMat);
-    step2.position.y = 0.36;
-    step2.receiveShadow = true;
-    step2.castShadow = true;
-    altarGroup.add(step2);
+    const terraceDeck = new THREE.Mesh(new THREE.CylinderGeometry(2.20, 2.18, 0.14, 18), stoneMat);
+    terraceDeck.position.set(2.18, ISLAND_TOP_Y - 0.06, -1.55);
+    terraceDeck.scale.set(1.14, 1, 0.86);
+    terraceDeck.receiveShadow = true;
+    islandGroup.add(terraceDeck);
 
-    const pedestal = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 1.32, 0.42, 8), stoneMat);
-    pedestal.position.y = 0.68;
-    pedestal.receiveShadow = true;
-    pedestal.castShadow = true;
-    altarGroup.add(pedestal);
+    // Curved front seat lip directly beneath Musician's hips (stops behind shins so BOTH legs hang freely over water)
+    const frontSeatLip = new THREE.Mesh(new THREE.CylinderGeometry(0.96, 1.00, 0.74, 18), darkCliffMat);
+    frontSeatLip.position.set(0.58, 0.0, -0.82);
+    frontSeatLip.scale.set(0.96, 1, 0.86);
+    frontSeatLip.castShadow = true;
+    frontSeatLip.receiveShadow = true;
+    islandGroup.add(frontSeatLip);
 
-    // Glowing Triforce inlay ring on top of pedestal (offset +0.02 to prevent Z-fighting)
+    const frontSeatCap = new THREE.Mesh(new THREE.CylinderGeometry(0.98, 0.96, 0.12, 18), stoneMat);
+    frontSeatCap.position.set(0.58, ISLAND_TOP_Y - 0.05, -0.82);
+    frontSeatCap.scale.set(0.96, 1, 0.86);
+    frontSeatCap.receiveShadow = true;
+    islandGroup.add(frontSeatCap);
+
+    // Subtle resonance ring (invisible at rest, pulses brightly when completing a Zelda song)
     const runeRingMat = new THREE.MeshStandardMaterial({
       color: 0x38bdf8,
       emissive: 0x22d3ee,
-      emissiveIntensity: 1.4,
+      emissiveIntensity: 0.0,
+      transparent: true,
+      opacity: 0.0,
       roughness: 0.25,
       metalness: 0.4,
     });
-    this.auraRingMesh = new THREE.Mesh(
-      new THREE.RingGeometry(0.72, 0.88, 8),
-      runeRingMat,
-    );
+    this.auraRingMesh = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.50, 8), runeRingMat);
     this.auraRingMesh.rotation.x = -Math.PI / 2;
-    this.auraRingMesh.position.y = 0.91;
-    altarGroup.add(this.auraRingMesh);
+    this.auraRingMesh.position.set(0.42, ISLAND_TOP_Y + 0.015, -0.14);
+    islandGroup.add(this.auraRingMesh);
 
-    // Soft radial contact shadow beneath hovering Ocarina
-    const contactShadow = new THREE.Mesh(
-      new THREE.CircleGeometry(0.95, 24),
-      new THREE.MeshBasicMaterial({
-        map: createContactShadowTexture(),
-        transparent: true,
-        opacity: 0.48,
-        depthWrite: false,
+    // Soft contact shadows beneath Cat
+    const shadowTex = createContactShadowTexture();
+    const shadowMat = new THREE.MeshBasicMaterial({
+      map: shadowTex,
+      transparent: true,
+      opacity: 0.46,
+      depthWrite: false,
+    });
+    const catShadow = new THREE.Mesh(new THREE.CircleGeometry(0.55, 16), shadowMat);
+    catShadow.rotation.x = -Math.PI / 2;
+    catShadow.position.set(1.58, ISLAND_TOP_Y + 0.012, -0.12);
+    islandGroup.add(catShadow);
+
+    // 3. Detailed Medieval Stone Tower, Archway Corbels, Lantern & Ivy on Right Edge
+    const towerGroup = new THREE.Group();
+    towerGroup.position.set(3.25, 0, -0.45);
+    towerGroup.rotation.y = -0.18;
+
+    const towerPlinth = new THREE.Mesh(new THREE.BoxGeometry(1.68, 0.72, 1.78), darkCliffMat);
+    towerPlinth.position.y = 0.28;
+    towerPlinth.receiveShadow = true;
+    towerGroup.add(towerPlinth);
+
+    const rightTower = new THREE.Mesh(new THREE.BoxGeometry(1.45, 4.8, 1.55), stoneMat);
+    rightTower.position.y = 2.05;
+    rightTower.castShadow = true;
+    rightTower.receiveShadow = true;
+    towerGroup.add(rightTower);
+
+    // Carved corner masonry quoins / pilasters + mid-belt cornice
+    for (const [qx, qz] of [
+      [-0.72, 0.77],
+      [0.72, 0.77],
+      [-0.72, -0.77],
+    ] as const) {
+      const pilaster = new THREE.Mesh(new THREE.BoxGeometry(0.18, 4.7, 0.18), parapetMat);
+      pilaster.position.set(qx, 2.0, qz);
+      pilaster.castShadow = true;
+      towerGroup.add(pilaster);
+    }
+
+    const towerCornice = new THREE.Mesh(new THREE.BoxGeometry(1.62, 0.18, 1.72), parapetMat);
+    towerCornice.position.y = 2.42;
+    towerGroup.add(towerCornice);
+
+    // Recessed warm amber gothic slit window on the tower face
+    const slitFrame = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.62, 0.10), darkCliffMat);
+    slitFrame.position.set(-0.74, 2.95, 0.08);
+    slitFrame.rotation.y = Math.PI / 2;
+    const slitGlow = new THREE.Mesh(
+      new THREE.BoxGeometry(0.20, 0.48, 0.12),
+      new THREE.MeshStandardMaterial({
+        color: 0xfef08a,
+        emissive: 0xf59e0b,
+        emissiveIntensity: 1.8,
+        roughness: 0.3,
       }),
     );
-    contactShadow.rotation.x = -Math.PI / 2;
-    contactShadow.position.y = 0.905;
-    altarGroup.add(contactShadow);
+    slitGlow.position.set(-0.75, 2.95, 0.08);
+    slitGlow.rotation.y = Math.PI / 2;
+    towerGroup.add(slitFrame, slitGlow);
 
-    this.scene.add(altarGroup);
+    // Wrought-iron hanging lantern bracket on tower wall above the Cat
+    const towerIronMat = new THREE.MeshStandardMaterial({ color: 0x161b26, roughness: 0.45, metalness: 0.65 });
+    const lBracket = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.06, 0.06), towerIronMat);
+    lBracket.position.set(-0.88, 2.02, 0.35);
+    const lCage = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.10, 6), towerIronMat);
+    lCage.position.set(-1.02, 1.92, 0.35);
+    const lCore = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.065, 0.055, 0.14, 6),
+      new THREE.MeshStandardMaterial({ color: 0xfef08a, emissive: 0xf59e0b, emissiveIntensity: 2.0 }),
+    );
+    lCore.position.set(-1.02, 1.82, 0.35);
+    towerGroup.add(lBracket, lCage, lCore);
 
-    // 3. Six Ancient Temple Pillars circling the altar
-    const pillarBaseGeo = new THREE.CylinderGeometry(0.38, 0.46, 0.45, 6);
-    const pillarShaftGeo = new THREE.CylinderGeometry(0.28, 0.35, 2.6, 6);
-    const pillarCapGeo = new THREE.CylinderGeometry(0.44, 0.32, 0.3, 6);
-    const runeBandGeo = new THREE.CylinderGeometry(0.31, 0.31, 0.16, 6);
+    islandGroup.add(towerGroup);
+
+    const archBeam = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.55, 1.1), parapetMat);
+    archBeam.position.set(2.05, 3.15, -0.85);
+    archBeam.rotation.z = -0.14;
+    archBeam.castShadow = true;
+    const archTrim = new THREE.Mesh(new THREE.BoxGeometry(2.68, 0.14, 1.22), stoneMat);
+    archTrim.position.set(2.05, 3.42, -0.85);
+    archTrim.rotation.z = -0.14;
+    const corbel = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.42, 0.52), stoneMat);
+    corbel.position.set(2.58, 2.82, -0.78);
+    corbel.rotation.z = 0.55;
+    islandGroup.add(archBeam, archTrim, corbel);
+
+    // Rear low stone parapet wall with carved capstones, pilasters & creeping ivy + blossoms
+    const backWallGroup = new THREE.Group();
+    backWallGroup.position.set(1.75, ISLAND_TOP_Y, -1.85);
+    backWallGroup.rotation.y = -0.25;
+
+    const backWall = new THREE.Mesh(new THREE.BoxGeometry(2.25, 0.52, 0.46), parapetMat);
+    backWall.position.y = 0.26;
+    backWall.castShadow = true;
+    backWall.receiveShadow = true;
+    backWallGroup.add(backWall);
+
+    for (let i = -2; i <= 2; i++) {
+      const cap = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.10, 0.54), stoneMat);
+      cap.position.set(i * 0.45, 0.56, 0);
+      backWallGroup.add(cap);
+    }
+    for (const px of [-1.02, 0, 1.02]) {
+      const rib = new THREE.Mesh(new THREE.BoxGeometry(0.20, 0.58, 0.52), stoneMat);
+      rib.position.set(px, 0.29, 0);
+      backWallGroup.add(rib);
+    }
+    islandGroup.add(backWallGroup);
+
+    // Sculpted multi-petal glowing purple flowers with green leaf rosettes & stems
+    const flowerPetalMat = new THREE.MeshStandardMaterial({
+      color: 0xd946ef,
+      emissive: 0xa21caf,
+      emissiveIntensity: 0.72,
+      roughness: 0.38,
+    });
+    const flowerCenterMat = new THREE.MeshStandardMaterial({
+      color: 0xfde047,
+      emissive: 0xf59e0b,
+      emissiveIntensity: 0.9,
+      roughness: 0.3,
+    });
+    const leafPatchMat = new THREE.MeshStandardMaterial({
+      color: 0x22683f,
+      roughness: 0.86,
+      metalness: 0.02,
+    });
+    const leafGeo = new THREE.SphereGeometry(0.075, 8, 6);
+    leafGeo.scale(1.4, 0.38, 0.85);
+    const petalGeo = new THREE.SphereGeometry(0.038, 8, 6);
+    petalGeo.scale(1.2, 0.45, 0.85);
 
     for (let i = 0; i < 6; i++) {
-      const angle = (i / 6) * Math.PI * 2 + 0.32;
-      const px = Math.cos(angle) * 6.0;
-      const pz = Math.sin(angle) * 6.0;
-      // Leave space clear around scoreboard monolith at (+4.2, -2.6)
-      if (Math.hypot(px - 4.2, pz + 2.6) < 2.2) continue;
+      const fx = 1.02 + i * 0.29;
+      const fz = -1.26 - (i % 2) * 0.18;
+      const fGroup = new THREE.Group();
+      fGroup.position.set(fx, ISLAND_TOP_Y, fz);
 
+      for (let l = 0; l < 4; l++) {
+        const ang = l * (Math.PI / 2) + i * 0.4;
+        const leaf = new THREE.Mesh(leafGeo, leafPatchMat);
+        leaf.position.set(Math.cos(ang) * 0.075, 0.035, Math.sin(ang) * 0.075);
+        leaf.rotation.y = -ang;
+        leaf.rotation.z = 0.2;
+        fGroup.add(leaf);
+      }
+
+      const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.016, 0.15, 6), leafPatchMat);
+      stem.position.y = 0.08;
+      fGroup.add(stem);
+
+      const head = new THREE.Group();
+      head.position.y = 0.16;
+      head.rotation.x = 0.25;
+      const center = new THREE.Mesh(new THREE.SphereGeometry(0.028, 8, 6), flowerCenterMat);
+      head.add(center);
+      for (let p = 0; p < 5; p++) {
+        const pang = (p / 5) * Math.PI * 2;
+        const petal = new THREE.Mesh(petalGeo, flowerPetalMat);
+        petal.position.set(Math.cos(pang) * 0.042, 0, Math.sin(pang) * 0.042);
+        petal.rotation.y = -pang;
+        head.add(petal);
+      }
+      fGroup.add(head);
+      islandGroup.add(fGroup);
+    }
+
+    // Connected stone bridge extending right to the Scoreboard Monolith pier
+    const bridgeToScore = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.68, 1.8), darkCliffMat);
+    bridgeToScore.position.set(4.6, 0.0, -1.55);
+    bridgeToScore.rotation.y = 0.25;
+    bridgeToScore.receiveShadow = true;
+    islandGroup.add(bridgeToScore);
+
+    this.scene.add(islandGroup);
+
+    // 4. Two Rune Lantern Posts flanking the right Scoreboard Pier
+    const pillarBaseGeo = new THREE.CylinderGeometry(0.24, 0.30, 0.35, 6);
+    const pillarShaftGeo = new THREE.CylinderGeometry(0.16, 0.20, 1.55, 6);
+    const runeBandGeo = new THREE.CylinderGeometry(0.19, 0.19, 0.16, 6);
+    for (const [px, pz] of [
+      [3.95, -2.95],
+      [6.85, -1.65],
+    ]) {
       const pGroup = new THREE.Group();
-      const base = new THREE.Mesh(pillarBaseGeo, mossStoneMat);
-      base.position.y = 0.225;
-      base.castShadow = true;
-      base.receiveShadow = true;
-
+      const base = new THREE.Mesh(pillarBaseGeo, parapetMat);
+      base.position.y = 0.17;
       const shaft = new THREE.Mesh(pillarShaftGeo, stoneMat);
-      shaft.position.y = 1.7;
-      shaft.castShadow = true;
-      shaft.receiveShadow = true;
-
-      const cap = new THREE.Mesh(pillarCapGeo, stoneMat);
-      cap.position.y = 3.12;
-      cap.castShadow = true;
-
+      shaft.position.y = 1.05;
       const rune = new THREE.Mesh(
         runeBandGeo,
         new THREE.MeshStandardMaterial({
@@ -398,108 +589,63 @@ export class OcarinaSceneController {
           roughness: 0.3,
         }),
       );
-      rune.position.y = 2.45;
+      rune.position.y = 1.85;
       this.pillarRunes.push(rune);
-
-      pGroup.add(base, shaft, cap, rune);
-      pGroup.position.set(px, groundHeightAt(px, pz), pz);
-      pGroup.rotation.y = angle;
+      pGroup.add(base, shaft, rune);
+      pGroup.position.set(px, ISLAND_TOP_Y, pz);
       this.scene.add(pGroup);
     }
 
-    // 4. Instanced Low-Poly Pine Grove around perimeter (44 trees)
-    const treeCount = 44;
-    const trunkGeo = new THREE.CylinderGeometry(0.18, 0.28, 1.4, 5);
-    const trunkMat = new THREE.MeshStandardMaterial({
-      color: 0x4b3621,
-      roughness: 0.92,
-      flatShading: true,
-    });
-    const foliageGeo = new THREE.ConeGeometry(1.15, 2.5, 6);
-    const foliageMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      roughness: 0.85,
-      flatShading: true,
-    });
-
-    const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, treeCount);
-    const foliageLower = new THREE.InstancedMesh(foliageGeo, foliageMat, treeCount);
-    const foliageUpper = new THREE.InstancedMesh(foliageGeo, foliageMat, treeCount);
-    trunks.castShadow = true;
-    foliageLower.castShadow = true;
-
-    const dummy = new THREE.Object3D();
-    for (let i = 0; i < treeCount; i++) {
-      const a = (i / treeCount) * Math.PI * 2 + (i % 3) * 0.14;
-      const dist = 10.5 + (i % 5) * 2.8 + Math.sin(i * 7.1) * 1.1;
-      const tx = Math.cos(a) * dist;
-      const tz = Math.sin(a) * dist;
-      const ty = groundHeightAt(tx, tz);
-      const sc = 0.85 + (i % 4) * 0.15;
-
-      dummy.position.set(tx, ty + 0.7 * sc, tz);
-      dummy.rotation.set(0, a, 0);
+    // 5. Starry Nocturnal Sky Dome (Instanced star specks across indigo/purple sky)
+    const starCount = 130;
+    const starGeo = new THREE.OctahedronGeometry(0.085, 0);
+    const starMat = new THREE.MeshBasicMaterial({ color: 0xfefce8 });
+    const stars = new THREE.InstancedMesh(starGeo, starMat, starCount);
+    for (let i = 0; i < starCount; i++) {
+      const phi = -Math.PI * 0.85 + (i / starCount) * Math.PI * 0.95;
+      const r = 24 + (i % 7) * 3.8;
+      const sx = Math.sin(phi) * r - 1.5;
+      const sz = -Math.cos(phi) * r - 4;
+      const sy = 2.5 + ((i * 7) % 13) * 1.15;
+      const sc = 0.45 + (i % 4) * 0.35;
+      dummy.position.set(sx, sy, sz);
+      dummy.rotation.set(i, i * 0.5, 0);
       dummy.scale.setScalar(sc);
       dummy.updateMatrix();
-      trunks.setMatrixAt(i, dummy.matrix);
-
-      dummy.position.set(tx, ty + 2.0 * sc, tz);
-      dummy.scale.set(sc * 1.1, sc, sc * 1.1);
-      dummy.updateMatrix();
-      foliageLower.setMatrixAt(i, dummy.matrix);
-
-      dummy.position.set(tx, ty + 3.1 * sc, tz);
-      dummy.scale.set(sc * 0.78, sc * 0.82, sc * 0.78);
-      dummy.updateMatrix();
-      foliageUpper.setMatrixAt(i, dummy.matrix);
-
-      const shade = 0.75 + (i % 5) * 0.08;
-      _color.setRGB(0.11 * shade, 0.38 * shade, 0.26 * shade);
-      foliageLower.setColorAt(i, _color);
-      _color.setRGB(0.15 * shade, 0.46 * shade, 0.30 * shade);
-      foliageUpper.setColorAt(i, _color);
+      stars.setMatrixAt(i, dummy.matrix);
     }
-    trunks.computeBoundingSphere();
-    foliageLower.computeBoundingSphere();
-    foliageUpper.computeBoundingSphere();
-    this.scene.add(trunks, foliageLower, foliageUpper);
+    stars.computeBoundingSphere();
+    this.scene.add(stars);
+  }
 
-    // 5. Instanced Faceted Mossy Boulders (28 rocks)
-    const rockCount = 28;
-    const rockGeo = new THREE.DodecahedronGeometry(0.55, 0);
-    const rockMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      roughness: 0.88,
-      flatShading: true,
-    });
-    const rocks = new THREE.InstancedMesh(rockGeo, rockMat, rockCount);
-    for (let i = 0; i < rockCount; i++) {
-      const a = (i / rockCount) * Math.PI * 2 + 0.5;
-      const dist = 7.4 + (i % 4) * 2.2;
-      const rx = Math.cos(a) * dist;
-      const rz = Math.sin(a) * dist;
-      const ry = groundHeightAt(rx, rz);
-      const sc = 0.65 + (i % 4) * 0.25;
-      dummy.position.set(rx, ry + sc * 0.22, rz);
-      dummy.rotation.set(i * 0.7, i * 1.3, 0);
-      dummy.scale.set(sc * 1.2, sc * 0.72, sc);
-      dummy.updateMatrix();
-      rocks.setMatrixAt(i, dummy.matrix);
+  private buildCharactersAndVillage(): void {
+    // 1. Chibi Low-Poly Musician seated directly on front-left curved island lip (legs dangling over water)
+    this.musicianRig = createMusicianCharacter(false);
+    this.musicianRig.root.position.set(0.42, ISLAND_TOP_Y, -0.02);
+    this.musicianRig.root.rotation.y = 0.06;
+    this.scene.add(this.musicianRig.root);
 
-      _color.setHex(i % 2 === 0 ? 0x4b5c66 : 0x3f544a);
-      rocks.setColorAt(i, _color);
-    }
-    rocks.computeBoundingSphere();
-    this.scene.add(rocks);
+    // 2. Larger Companion Cat seated right beside Musician on the stone terrace
+    this.catRig = createCompanionCat();
+    this.catRig.root.position.set(1.58, ISLAND_TOP_Y, -0.10);
+    this.catRig.root.rotation.y = -0.22;
+    this.catRig.root.scale.setScalar(1.24);
+    this.scene.add(this.catRig.root);
+
+    // 3. Distant Stone Quay with 2 Fishing Villagers & Silhouetted Lakeside Village
+    this.villageRig = createMoonlitVillageAndFishermen();
+    this.scene.add(this.villageRig.root);
   }
 
   private buildOcarinaHero(): void {
     this.ocarinaRoot = new THREE.Group();
-    this.ocarinaRoot.position.set(0, 1.56, 0);
+    // Nestled right inside the Musician's hands (scaled proportionally like reference!)
+    this.ocarinaRoot.position.set(0.42, 0.88, 0.34);
+    this.ocarinaRoot.scale.setScalar(0.26);
 
     this.ocarinaBodyGroup = new THREE.Group();
-    // Tilt slightly toward camera so all 5 top holes are clearly clickable & legible
-    this.ocarinaBodyGroup.rotation.x = 0.42;
+    // Tilt slightly toward camera so all 5 top holes remain clearly visible & clickable
+    this.ocarinaBodyGroup.rotation.x = 0.48;
     this.ocarinaRoot.add(this.ocarinaBodyGroup);
 
     const ceramicMat = new THREE.MeshStandardMaterial({
@@ -565,7 +711,14 @@ export class OcarinaSceneController {
     mouthMesh.castShadow = true;
     this.ocarinaBodyGroup.add(mouthMesh);
 
-    // 3. Metallic Gold Collar Band around mouthpiece neck (proud & visible)
+    // 3. Metallic Gold Collar Band + Silver Trim Rings around mouthpiece neck
+    const silverTrimMat = new THREE.MeshStandardMaterial({
+      color: 0xe2e8f0,
+      roughness: 0.22,
+      metalness: 0.9,
+      flatShading: true,
+    });
+
     const collarGeo = new THREE.CylinderGeometry(0.175, 0.195, 0.14, 8);
     collarGeo.rotateZ(Math.PI / 2);
     collarGeo.scale(1, 0.85, 1.15);
@@ -574,6 +727,17 @@ export class OcarinaSceneController {
     collarMesh.rotation.y = 0.58;
     collarMesh.castShadow = true;
     this.ocarinaBodyGroup.add(collarMesh);
+
+    const trimGeo = new THREE.CylinderGeometry(0.184, 0.184, 0.025, 8);
+    trimGeo.rotateZ(Math.PI / 2);
+    trimGeo.scale(1, 0.87, 1.17);
+    const trimFront = new THREE.Mesh(trimGeo, silverTrimMat);
+    trimFront.position.set(-0.78, 0.0, 0.44);
+    trimFront.rotation.y = 0.58;
+    const trimBack = new THREE.Mesh(trimGeo, silverTrimMat);
+    trimBack.position.set(-0.90, 0.0, 0.52);
+    trimBack.rotation.y = 0.58;
+    this.ocarinaBodyGroup.add(trimFront, trimBack);
 
     // 4. Raised 3-Triangle Golden Triforce Crest on top of the mouthpiece collar
     const triShape = new THREE.Shape();
@@ -598,13 +762,37 @@ export class OcarinaSceneController {
     triforceGroup.rotation.set(-Math.PI / 2 + 0.12, 0, 0.58);
     this.ocarinaBodyGroup.add(triforceGroup);
 
-    // 5. Acoustic sound-hole slot underneath
+    // 5. Fipple Windway & Acoustic Sound-Hole Slot + Authentic 12-hole Sub-Vents
+    const fippleWindow = new THREE.Mesh(
+      new THREE.BoxGeometry(0.11, 0.04, 0.09),
+      darkCavityMat,
+    );
+    fippleWindow.position.set(-0.71, 0.16, 0.39);
+    fippleWindow.rotation.y = 0.58;
+    this.ocarinaBodyGroup.add(fippleWindow);
+
     const slotMesh = new THREE.Mesh(
       new THREE.BoxGeometry(0.24, 0.06, 0.14),
       darkCavityMat,
     );
     slotMesh.position.set(-0.35, -0.34, 0.1);
     this.ocarinaBodyGroup.add(slotMesh);
+
+    // Recessed ceramic sub-holes (authentic 12-hole acoustic vents & underside thumb holes)
+    const subHoleGeo = new THREE.CylinderGeometry(0.055, 0.065, 0.04, 8);
+    const subHoleSpecs: Array<[number, number, number, number, number]> = [
+      [-0.42, 0.25, -0.14, -0.15, 0.12], // top-left auxiliary vent
+      [0.44, 0.23, 0.21, 0.18, -0.14], // top-right pinky vent
+      [-0.08, -0.31, -0.22, 0, 0], // underside left thumb hole
+      [0.24, -0.31, -0.18, 0, 0], // underside right thumb hole
+      [0.62, 0.20, 0.08, 0.08, -0.22], // far-right tuning vent
+    ];
+    for (const [sx, sy, sz, rx, rz] of subHoleSpecs) {
+      const subHole = new THREE.Mesh(subHoleGeo, darkCavityMat);
+      subHole.position.set(sx, sy, sz);
+      subHole.rotation.set(rx, 0, rz);
+      this.ocarinaBodyGroup.add(subHole);
+    }
 
     // 6. Five Interactive 3D Tone-Hole Valves (Socket + Spring Button + Glow Ring + Raycast Proxy)
     const socketGeo = new THREE.CylinderGeometry(0.145, 0.16, 0.07, 8);
@@ -667,46 +855,54 @@ export class OcarinaSceneController {
 
   private buildFairyCompanion(): void {
     this.fairyGroup = new THREE.Group();
-    this.fairyGroup.position.set(-1.35, 2.2, 0.45);
+    this.fairyGroup.position.set(2.2, 1.55, -0.35);
+    this.fairyGroup.scale.setScalar(0.55);
 
     const core = new THREE.Mesh(
-      new THREE.OctahedronGeometry(0.11, 0),
+      new THREE.SphereGeometry(0.105, 14, 12),
       new THREE.MeshStandardMaterial({
         color: 0xe0f2fe,
         emissive: 0x38bdf8,
-        emissiveIntensity: 1.8,
-        roughness: 0.1,
-        flatShading: true,
+        emissiveIntensity: 2.0,
+        roughness: 0.08,
       }),
     );
-    this.fairyGroup.add(core);
+    const halo = new THREE.Mesh(
+      new THREE.TorusGeometry(0.16, 0.012, 8, 20),
+      new THREE.MeshBasicMaterial({ color: 0x7dd3fc, transparent: true, opacity: 0.55 }),
+    );
+    halo.rotation.x = Math.PI / 2 - 0.35;
+    this.fairyGroup.add(core, halo);
 
     const wingShape = new THREE.Shape();
     wingShape.moveTo(0, 0);
-    wingShape.lineTo(0.24, 0.14);
-    wingShape.lineTo(0.30, 0.02);
-    wingShape.lineTo(0.16, -0.06);
+    wingShape.bezierCurveTo(0.12, 0.16, 0.30, 0.20, 0.34, 0.08);
+    wingShape.bezierCurveTo(0.36, -0.02, 0.22, -0.10, 0, -0.02);
     wingShape.closePath();
 
     const wingGeo = new THREE.ExtrudeGeometry(wingShape, {
-      depth: 0.01,
-      bevelEnabled: false,
+      depth: 0.012,
+      bevelEnabled: true,
+      bevelThickness: 0.004,
+      bevelSize: 0.003,
+      bevelSegments: 2,
+      curveSegments: 8,
     });
     const wingMat = new THREE.MeshStandardMaterial({
-      color: 0x7dd3fc,
+      color: 0xbae6fd,
       emissive: 0x0ea5e9,
-      emissiveIntensity: 0.28,
+      emissiveIntensity: 0.45,
       transparent: true,
-      opacity: 0.72,
-      roughness: 0.25,
+      opacity: 0.78,
+      roughness: 0.2,
       side: THREE.DoubleSide,
     });
 
     const configs = [
       { x: 0.04, y: 0.04, ry: -0.35, rz: 0.2, sx: 1 },
       { x: -0.04, y: 0.04, ry: 0.35, rz: -0.2, sx: -1 },
-      { x: 0.04, y: -0.03, ry: -0.4, rz: -0.25, sx: 0.78 },
-      { x: -0.04, y: -0.03, ry: 0.4, rz: 0.25, sx: -0.78 },
+      { x: 0.04, y: -0.03, ry: -0.4, rz: -0.35, sx: 0.76 },
+      { x: -0.04, y: -0.03, ry: 0.4, rz: 0.35, sx: -0.76 },
     ];
     for (const c of configs) {
       const w = new THREE.Mesh(wingGeo, wingMat);
@@ -724,10 +920,10 @@ export class OcarinaSceneController {
 
   private buildScoreboardMonolith(): void {
     const monoGroup = new THREE.Group();
-    const mx = 4.2;
-    const mz = -2.6;
-    monoGroup.position.set(mx, groundHeightAt(mx, mz), mz);
-    monoGroup.rotation.y = -0.52;
+    const mx = 5.4;
+    const mz = -1.9;
+    monoGroup.position.set(mx, ISLAND_TOP_Y, mz);
+    monoGroup.rotation.y = -0.58;
 
     const stoneMat = new THREE.MeshStandardMaterial({
       color: 0x506072,
@@ -986,6 +1182,15 @@ export class OcarinaSceneController {
     this.physics.pointerTiltY = THREE.MathUtils.clamp(ty, -1, 1);
   }
 
+  public setPitchShiftVisual(shift: number): void {
+    this.pitchShiftVisual = shift;
+    if (this.auraBoost <= 0.05) {
+      if (shift > 0) this.auraColor.set('#fbbf24');
+      else if (shift < 0) this.auraColor.set('#a78bfa');
+      else this.auraColor.set('#38bdf8');
+    }
+  }
+
   public getVibratoIntensity(): number {
     return this.physics.vibratoIntensity;
   }
@@ -1006,39 +1211,57 @@ export class OcarinaSceneController {
       if (hits.length > 0) {
         const noteId = hits[0].object.userData.noteId as NoteId | undefined;
         if (noteId) {
-          this.activePointerHole = noteId;
+          this.pointerHoleMap.set(e.pointerId, noteId);
           dom.setPointerCapture?.(e.pointerId);
+          if (e.pointerType === 'touch') {
+            try {
+              navigator.vibrate?.(8);
+            } catch {
+              // Ignore vibration restrictions
+            }
+          }
           this.callbacks.onHolePress(noteId);
           return;
         }
       }
-      this.isDraggingTilt = true;
-      this.dragStart = { x: e.clientX, y: e.clientY };
-      dom.setPointerCapture?.(e.pointerId);
+      if (this.tiltPointerId === null) {
+        this.tiltPointerId = e.pointerId;
+        this.dragStart = { x: e.clientX, y: e.clientY };
+        dom.setPointerCapture?.(e.pointerId);
+      }
     };
 
     const onPointerMove = (e: PointerEvent) => {
       updateNdc(e);
-      if (this.isDraggingTilt) {
+      if (e.pointerId === this.tiltPointerId) {
         const dx = (e.clientX - this.dragStart.x) / 140;
         const dy = (e.clientY - this.dragStart.y) / 140;
         this.setPointerTilt(dx, dy);
         this.callbacks.onDragTilt(dx, dy);
         return;
       }
-      if (!this.activePointerHole && this.cameraMode === 'title') {
+      if (this.pointerHoleMap.size === 0 && this.cameraMode === 'title' && e.pointerType !== 'touch') {
         this.setPointerTilt(this.pointerNdc.x * 0.45, this.pointerNdc.y * 0.35);
       }
     };
 
     const onPointerUp = (e: PointerEvent) => {
-      if (this.activePointerHole) {
-        const noteId = this.activePointerHole;
-        this.activePointerHole = null;
-        this.callbacks.onHoleRelease(noteId);
+      const releasedNote = this.pointerHoleMap.get(e.pointerId);
+      if (releasedNote) {
+        this.pointerHoleMap.delete(e.pointerId);
+        let stillHeldByOtherPointer = false;
+        for (const activeNote of this.pointerHoleMap.values()) {
+          if (activeNote === releasedNote) {
+            stillHeldByOtherPointer = true;
+            break;
+          }
+        }
+        if (!stillHeldByOtherPointer) {
+          this.callbacks.onHoleRelease(releasedNote);
+        }
       }
-      if (this.isDraggingTilt) {
-        this.isDraggingTilt = false;
+      if (e.pointerId === this.tiltPointerId) {
+        this.tiltPointerId = null;
         this.setPointerTilt(0, 0);
         this.callbacks.onDragTilt(0, 0);
       }
@@ -1097,10 +1320,10 @@ export class OcarinaSceneController {
       stepOcarinaPhysics(this.physics, this.heldNotes.size, dt, this.elapsed);
     }
 
-    // Apply spring physics to Ocarina root & body
-    const hoverY = 1.54 + Math.sin(this.elapsed * 1.9) * 0.055 + this.physics.bounceY.value;
+    // Apply spring physics to Ocarina nestled directly in the Musician's hands
+    const hoverY = 0.88 + Math.sin(this.elapsed * 2.1) * 0.015 + this.physics.bounceY.value * 0.35;
     this.ocarinaRoot.position.y = hoverY;
-    this.ocarinaBodyGroup.rotation.x = 0.42 + this.physics.tiltX.value;
+    this.ocarinaBodyGroup.rotation.x = 0.48 + this.physics.tiltX.value;
     this.ocarinaBodyGroup.rotation.z = this.physics.tiltZ.value;
     this.ocarinaBodyGroup.rotation.y = this.physics.yaw.value;
 
@@ -1121,15 +1344,49 @@ export class OcarinaSceneController {
       }
     }
 
-    // Animate Fairy Companion orbit & wing flap
+    // Animate Fairy Companion gentle orbit near right shoulder/cat (clear of top HUD)
     const wingSpeed = 16 + Math.min(20, this.comboLevel * 0.8);
-    const orbitR = 1.35;
-    this.fairyGroup.position.x = Math.cos(this.elapsed * 1.15) * orbitR;
-    this.fairyGroup.position.z = Math.sin(this.elapsed * 1.15) * 0.85 + 0.15;
-    this.fairyGroup.position.y = 2.08 + Math.sin(this.elapsed * 2.8) * 0.18;
+    this.fairyGroup.position.x = 2.05 + Math.cos(this.elapsed * 1.1) * 0.42;
+    this.fairyGroup.position.z = -0.35 + Math.sin(this.elapsed * 1.1) * 0.32;
+    this.fairyGroup.position.y = 1.56 + Math.sin(this.elapsed * 2.8) * 0.10;
     for (const wing of this.fairyWings) {
       const flap = Math.sin(this.elapsed * wingSpeed) * 0.55;
       wing.rotation.y = (wing.userData.baseRy as number) + flap * (wing.userData.side as number);
+    }
+
+    // Animate shimmering water reflections (zero-GC)
+    if (this.waterRipples) {
+      for (let i = 0; i < this.rippleCount; i++) {
+        const m = this.rippleMeta[i];
+        const shimmer = 0.72 + Math.sin(this.elapsed * 2.3 + m.phase) * 0.32;
+        const driftX = Math.sin(this.elapsed * 1.1 + m.phase) * 0.05;
+        _vec3.set(m.x + driftX, WATER_LEVEL + 0.014, m.z);
+        _quat.identity();
+        _scaleVec.set(m.baseW * shimmer, 1, 1);
+        _mat4.compose(_vec3, _quat, _scaleVec);
+        this.waterRipples.setMatrixAt(i, _mat4);
+      }
+      this.waterRipples.instanceMatrix.needsUpdate = true;
+    }
+
+    // Animate 3D Characters (Musician, Companion Cat, Fishing Bobber)
+    const isPlayingNote = this.heldNotes.size > 0;
+    if (this.musicianRig) {
+      updateMusicianRig(
+        this.musicianRig,
+        this.elapsed,
+        isPlayingNote,
+        this.pitchShiftVisual,
+        this.physics.tiltX.value,
+        this.physics.tiltZ.value,
+      );
+    }
+    if (this.catRig) {
+      updateCatRig(this.catRig, this.elapsed, isPlayingNote, this.comboLevel);
+    }
+    if (this.villageRig) {
+      this.villageRig.bobber.position.y = 0.04 + Math.sin(this.elapsed * 2.4) * 0.025;
+      this.villageRig.rodTipGroup.rotation.x = -0.34 + Math.sin(this.elapsed * 1.4) * 0.03;
     }
 
     // Animate Rupee trophies
@@ -1141,11 +1398,14 @@ export class OcarinaSceneController {
 
     // Aura & Pillar Runes decay
     this.auraBoost = Math.max(0, this.auraBoost - dt * 0.75);
+    const pitchBoost = this.pitchShiftVisual !== 0 ? 0.55 : 0;
     this.auraLight.color.copy(this.auraColor);
-    this.auraLight.intensity = 1.3 + this.auraBoost * 3.2 + this.physics.breathPressure * 0.8;
+    this.auraLight.intensity =
+      0.65 + this.auraBoost * 2.8 + pitchBoost + this.physics.breathPressure * 0.6;
     const auraMat = this.auraRingMesh.material as THREE.MeshStandardMaterial;
     auraMat.emissive.copy(this.auraColor);
-    auraMat.emissiveIntensity = 1.1 + this.auraBoost * 2.4;
+    auraMat.emissiveIntensity = this.auraBoost * 2.4;
+    auraMat.opacity = Math.min(0.85, this.auraBoost * 1.1);
     for (const rune of this.pillarRunes) {
       const rMat = rune.material as THREE.MeshStandardMaterial;
       rMat.emissive.copy(this.auraColor);
@@ -1181,22 +1441,31 @@ export class OcarinaSceneController {
       this.particleInstanced.instanceColor.needsUpdate = true;
     }
 
-    // Exponentially damped camera framing (with portrait-aspect pull-back)
-    const portraitScale =
-      this.camera.aspect < 1
-        ? Math.min(1.85, 1.02 / Math.max(0.55, this.camera.aspect))
-        : 1;
+    // Exponentially damped camera framing tailored for both desktop & Android portrait/landscape
+    const isPortrait = this.camera.aspect < 0.92;
+    const portraitScale = isPortrait
+      ? Math.min(2.35, 0.94 / Math.max(0.42, this.camera.aspect))
+      : 1;
 
     if (this.cameraMode === 'title') {
-      const panX = Math.sin(this.elapsed * 0.28) * 0.95;
-      _vec3.set(panX + 0.55, 2.35, 4.95 * portraitScale);
-      _vec3B.set(-0.35, 1.38, 0);
+      const panX = Math.sin(this.elapsed * 0.25) * (isPortrait ? 0.18 : 0.35);
+      if (isPortrait) {
+        _vec3.set(panX + 0.86, 1.66, 3.65 * portraitScale);
+        _vec3B.set(0.92, 1.34, -0.35);
+      } else {
+        _vec3.set(panX + 0.04, 1.52, 3.85);
+        _vec3B.set(-0.08, 0.86, -0.35);
+      }
     } else if (this.cameraMode === 'scoreboard') {
-      _vec3.set(2.55, 2.35, 2.35 * portraitScale);
-      _vec3B.set(4.15, 1.68, -2.5);
+      _vec3.set(3.85, 2.35, 2.85 * portraitScale);
+      _vec3B.set(5.4, 1.75, -1.9);
+    } else if (isPortrait) {
+      // Lift Musician + Ocarina + Companion Cat cleanly above the bottom 3x5 mobile keypad
+      _vec3.set(0.88, 1.18, 3.55 * portraitScale);
+      _vec3B.set(0.92, 0.22, -0.35);
     } else {
-      _vec3.set(0, 2.65, 3.05 * portraitScale);
-      _vec3B.set(0, 1.18, 0.08);
+      _vec3.set(-0.08, 1.48, 3.62);
+      _vec3B.set(0.20, 0.82, -0.35);
     }
 
     const dampFactor = 1 - Math.exp(-5.2 * dt);
@@ -1227,6 +1496,7 @@ export class OcarinaSceneController {
     cancelAnimationFrame(this.frameId);
     clearTimeout(this.frameId);
     window.removeEventListener('resize', this.handleResize);
+    window.visualViewport?.removeEventListener('resize', this.handleResize);
     this.resizeObserver?.disconnect();
 
     this.scene.traverse((obj) => {
